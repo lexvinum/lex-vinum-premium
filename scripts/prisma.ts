@@ -1,0 +1,17 @@
+import "dotenv/config";
+
+import { PrismaClient } from "@prisma/client";
+import { PrismaNeon } from "@prisma/adapter-neon";
+
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error("DATABASE_URL is missing for script runtime");
+}
+
+const adapter = new PrismaNeon({ connectionString });
+
+export const prisma = new PrismaClient({
+  adapter,
+  log: ["warn", "error"],
+});

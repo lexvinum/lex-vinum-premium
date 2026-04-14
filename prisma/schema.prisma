@@ -1,0 +1,191 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model CellarBottle {
+  id             String    @id @default(cuid())
+  wineId         String
+  quantity       Int       @default(1)
+  purchasePrice  Float?
+  purchaseDate   DateTime?
+  location       String?
+  drinkingWindow String?
+  personalNote   String?
+  rating         Int?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  wine           Wine      @relation(fields: [wineId], references: [id], onDelete: Cascade)
+
+  @@index([wineId])
+}
+
+model Wine {
+  id                      String    @id @default(cuid())
+  slug                    String    @unique
+  name                    String
+  producer                String?
+  country                 String?
+  region                  String?
+  grape                   String?
+  color                   String?
+  style                   String?
+  price                   Float?
+  vintage                 String?
+  image                   String?
+  aromasJson              String?
+  tagsJson                String?
+  description             String?
+  isQuebec                Boolean   @default(false)
+  featured                Boolean   @default(false)
+  body                    String?
+  acidity                 String?
+  tannin                  String?
+  minerality              String?
+  pairingJson             String?
+  serving                 String?
+  temperature             String?
+  cellar                  String?
+
+  vineyardId              String?
+  vineyard                Vineyard? @relation(fields: [vineyardId], references: [id], onDelete: SetNull)
+
+  originLabel             String?
+  latitude                Float?
+  longitude               Float?
+  placeId                 String?
+
+  saqCode                 String?   @unique
+  saqUrl                  String?
+  appellationOrigine      String?
+  designationReglementee  String?
+  alcohol                 String?
+  tauxSucre               String?
+  natureType              String?
+  bioType                 String?
+  formatMl                Int?
+  sourceFile              String?
+  dataSource              String?   @default("manual")
+
+  sugar                   String?
+  palate                  String?
+  oak                     String?
+
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  cellarBottles           CellarBottle[]
+
+  @@index([country])
+  @@index([region])
+  @@index([color])
+  @@index([isQuebec])
+  @@index([featured])
+  @@index([dataSource])
+  @@index([saqCode])
+}
+
+model Vineyard {
+  id               String   @id @default(cuid())
+  slug             String   @unique
+  name             String
+  description      String?
+  country          String?
+  region           String?
+  province         String?
+  city             String?
+  address          String?
+  postalCode       String?
+  latitude         Float?
+  longitude        Float?
+  placeId          String?
+  website          String?
+  phone            String?
+  email            String?
+  image            String?
+  isQuebec         Boolean  @default(false)
+  isActiveVisit    Boolean  @default(true)
+  tastingOffered   Boolean  @default(false)
+  lodgingOffered   Boolean  @default(false)
+  restaurantOnSite Boolean  @default(false)
+  routesJson       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  wines            Wine[]
+}
+
+model BlogPost {
+  id             String   @id @default(cuid())
+  slug           String   @unique
+  title          String
+  excerpt        String?
+  content        String   @db.Text
+  coverImage     String?
+  category       String?
+  tagsJson       String?
+  author         String?
+  published      Boolean  @default(false)
+  publishedAt    DateTime?
+  featured       Boolean  @default(false)
+  seoTitle       String?
+  seoDescription String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model ShopProduct {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String
+  shortDesc   String?
+  priceCents  Int
+  currency    String   @default("cad")
+  image       String?
+  category    String?
+  featured    Boolean  @default(false)
+  active      Boolean  @default(true)
+  inventory   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderItems  ShopOrderItem[]
+}
+
+model ShopOrder {
+  id                    String          @id @default(cuid())
+  email                 String
+  status                String          @default("pending")
+  currency              String          @default("cad")
+  subtotalCents         Int
+  totalCents            Int
+  stripePaymentIntentId String?         @unique
+  shippingName          String?
+  shippingAddressLine1  String?
+  shippingAddressLine2  String?
+  shippingCity          String?
+  shippingState         String?
+  shippingPostalCode    String?
+  shippingCountry       String?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  items ShopOrderItem[]
+}
+
+model ShopOrderItem {
+  id             String      @id @default(cuid())
+  orderId        String
+  productId      String
+  quantity       Int
+  unitPriceCents Int
+
+  order          ShopOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product        ShopProduct @relation(fields: [productId], references: [id])
+
+  createdAt      DateTime    @default(now())
+}

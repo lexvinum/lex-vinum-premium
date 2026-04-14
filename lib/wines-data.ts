@@ -1,0 +1,236 @@
+export type WineRecord = {
+  id: string;
+  slug: string;
+  name: string;
+  producer?: string;
+  country?: string;
+  region?: string;
+  grape?: string;
+  color?: string;
+  style?: string;
+  price?: number;
+  vintage?: string;
+  image?: string;
+  aromas?: string[];
+  tags?: string[];
+  description?: string;
+  isQuebec?: boolean;
+  featured?: boolean;
+  body?: string;
+  acidity?: string;
+  tannin?: string;
+  minerality?: string;
+  pairing?: string[];
+  serving?: string;
+  temperature?: string;
+  cellar?: string;
+};
+
+export const WINES: WineRecord[] = [
+  {
+    id: "1",
+    slug: "clos-jordanne-pinot-noir",
+    name: "Clos Jordanne Pinot Noir",
+    producer: "Clos Jordanne",
+    country: "Canada",
+    region: "Niagara",
+    grape: "Pinot Noir",
+    color: "rouge",
+    style: "élégant",
+    price: 42,
+    vintage: "2021",
+    aromas: ["cerise", "épices douces", "terre"],
+    tags: ["raffiné", "gastronomique"],
+    body: "moyen",
+    acidity: "fraîche",
+    tannin: "souple",
+    minerality: "moyenne",
+    pairing: ["canard", "volaille rôtie", "champignons", "thon grillé"],
+    serving: "Ouvrir 20 à 30 minutes avant le service.",
+    temperature: "15–16 °C",
+    cellar: "3 à 6 ans",
+    isQuebec: false,
+    featured: true,
+    description:
+      "Rouge précis et délicat, porté sur le fruit rouge, les épices fines et une texture soyeuse.",
+  },
+  {
+    id: "2",
+    slug: "domaine-st-jacques-riesling",
+    name: "Domaine St-Jacques Riesling",
+    producer: "Domaine St-Jacques",
+    country: "Canada",
+    region: "Québec",
+    grape: "Riesling",
+    color: "blanc",
+    style: "minéral",
+    price: 29,
+    vintage: "2023",
+    aromas: ["agrumes", "pomme verte", "fleurs blanches"],
+    tags: ["québec", "tension"],
+    body: "léger",
+    acidity: "élevée",
+    tannin: "absent",
+    minerality: "élevée",
+    pairing: ["huîtres", "sushi", "fromage de chèvre", "pétoncles"],
+    serving: "Servir bien frais, sans trop descendre en température.",
+    temperature: "9–11 °C",
+    cellar: "2 à 5 ans",
+    isQuebec: true,
+    featured: true,
+    description:
+      "Blanc droit et lumineux, avec une belle tension, une acidité vive et un profil très digeste.",
+  },
+  {
+    id: "3",
+    slug: "chateau-peyredon-bordeaux-superieur",
+    name: "Château Peyredon Bordeaux Supérieur",
+    producer: "Château Peyredon",
+    country: "France",
+    region: "Bordeaux",
+    grape: "Merlot",
+    color: "rouge",
+    style: "structuré",
+    price: 24,
+    vintage: "2020",
+    aromas: ["fruits noirs", "cèdre", "tabac"],
+    tags: ["rapport qualité-prix", "classique"],
+    body: "moyen à ample",
+    acidity: "moyenne",
+    tannin: "moyen",
+    minerality: "faible",
+    pairing: ["bœuf", "agneau", "burgers", "fromages affinés"],
+    serving: "Peut gagner à être carafé brièvement.",
+    temperature: "16–17 °C",
+    cellar: "3 à 7 ans",
+    description:
+      "Rouge bordelais accessible, structuré sans lourdeur, avec un profil classique et polyvalent.",
+  },
+  {
+    id: "4",
+    slug: "domaine-lafage-novellum-chardonnay",
+    name: "Novellum Chardonnay",
+    producer: "Domaine Lafage",
+    country: "France",
+    region: "Roussillon",
+    grape: "Chardonnay",
+    color: "blanc",
+    style: "ample",
+    price: 22,
+    vintage: "2022",
+    aromas: ["poire", "vanille légère", "agrumes mûrs"],
+    tags: ["gourmand", "polyvalent"],
+    body: "moyen à ample",
+    acidity: "moyenne",
+    tannin: "absent",
+    minerality: "faible à moyenne",
+    pairing: ["poulet rôti", "pâtes crémeuses", "saumon", "fromages doux"],
+    serving: "Très bon compromis entre rondeur et fraîcheur.",
+    temperature: "10–12 °C",
+    cellar: "2 à 4 ans",
+    description:
+      "Blanc ample mais équilibré, avec rondeur, fruit mûr et finale propre.",
+  },
+  {
+    id: "5",
+    slug: "famille-perrin-cotes-du-rhone-reserve",
+    name: "Côtes-du-Rhône Réserve",
+    producer: "Famille Perrin",
+    country: "France",
+    region: "Rhône",
+    grape: "Grenache, Syrah",
+    color: "rouge",
+    style: "généreux",
+    price: 19,
+    vintage: "2021",
+    aromas: ["mûre", "poivre", "garrigue"],
+    tags: ["soleil", "épices"],
+    body: "moyen",
+    acidity: "moyenne",
+    tannin: "souple à moyen",
+    minerality: "faible",
+    pairing: ["pizza", "charcuteries", "grillades", "plats mijotés"],
+    serving: "Très polyvalent à table.",
+    temperature: "15–16 °C",
+    cellar: "2 à 5 ans",
+    description:
+      "Rouge chaleureux et souple, facile à aimer, parfait pour une cuisine savoureuse.",
+  },
+  {
+    id: "6",
+    slug: "weingut-dr-loosen-riesling-dry",
+    name: "Dr. Loosen Riesling Dry",
+    producer: "Dr. Loosen",
+    country: "Allemagne",
+    region: "Mosel",
+    grape: "Riesling",
+    color: "blanc",
+    style: "vibrant",
+    price: 25,
+    vintage: "2022",
+    aromas: ["lime", "ardoise", "fleurs"],
+    tags: ["minéral", "précis"],
+    body: "léger",
+    acidity: "élevée",
+    tannin: "absent",
+    minerality: "élevée",
+    pairing: ["crudo", "ceviche", "fruits de mer", "cuisine asiatique"],
+    serving: "Excellent pour les palais qui aiment la tension.",
+    temperature: "8–10 °C",
+    cellar: "3 à 6 ans",
+    description:
+      "Blanc tendu, ciselé, très frais, idéal pour les amateurs de minéralité et de droiture.",
+  },
+  {
+    id: "7",
+    slug: "coteau-st-paul-rose",
+    name: "Coteau St-Paul Rosé",
+    producer: "Coteau St-Paul",
+    country: "Canada",
+    region: "Québec",
+    grape: "Frontenac Gris",
+    color: "rosé",
+    style: "sec",
+    price: 27,
+    vintage: "2023",
+    aromas: ["fraise", "melon", "herbes fines"],
+    tags: ["québec", "été"],
+    body: "léger",
+    acidity: "fraîche",
+    tannin: "très faible",
+    minerality: "moyenne",
+    pairing: ["salades", "tartares", "apéro", "cuisine méditerranéenne"],
+    serving: "Parfait pour le service au verre ou les repas estivaux.",
+    temperature: "8–10 °C",
+    cellar: "1 à 3 ans",
+    isQuebec: true,
+    description:
+      "Rosé sec, frais et net, pensé pour l’apéro, les terrasses et les plats légers.",
+  },
+  {
+    id: "8",
+    slug: "vietti-barbera-dasti-tre-vigne",
+    name: "Vietti Barbera d'Asti Tre Vigne",
+    producer: "Vietti",
+    country: "Italie",
+    region: "Piémont",
+    grape: "Barbera",
+    color: "rouge",
+    style: "énergique",
+    price: 31,
+    vintage: "2021",
+    aromas: ["prune", "cerise noire", "épices"],
+    tags: ["italie", "acidité fraîche"],
+    body: "moyen",
+    acidity: "élevée",
+    tannin: "souple",
+    minerality: "moyenne",
+    pairing: ["tomates", "pâtes", "veau", "charcuteries"],
+    serving: "Très bon rouge de table pour plats à sauce tomate.",
+    temperature: "15–16 °C",
+    cellar: "3 à 6 ans",
+    featured: true,
+    description:
+      "Rouge vibrant, juteux et gastronomique, porté par une acidité rafraîchissante.",
+  },
+];

@@ -1,0 +1,3 @@
+name,producer,country,region,grape,color,style,price,vintage,image,aromas,tags,description,isQuebec,featured,body,acidity,tannin,minerality,pairings,serving,temperature,cellar
+Barolo DOCG,Fontanafredda,Italie,Piémont,Nebbiolo,Rouge,Structuré,54.25,2019,,cerise;rose;cuir,gastro;premium,Grand rouge élégant,false,true,full,high,high,medium,viande rouge;gibier,carafe 1h,16-18C,8-12 ans
+Chablis,William Fèvre,France,Bourgogne,Chardonnay,Blanc,Minéral,32.00,2022,,citron;pierre à fusil,mineral;franc,Blanc tendu,false,false,light,high,low,high,huîtres;poisson,frais,10-12C,3-5 ans

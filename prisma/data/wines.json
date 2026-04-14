@@ -1,0 +1,44 @@
+[
+  {
+    "slug": "bourgogne-pinot-noir",
+    "name": "Bourgogne Pinot Noir",
+    "producer": "Maison Louis Jadot",
+    "country": "France",
+    "region": "Bourgogne",
+    "grape": "Pinot Noir",
+    "color": "Rouge",
+    "style": "Élégant",
+    "price": 34.99,
+    "vintage": "2022",
+    "description": "Rouge léger, fruité et élégant.",
+    "featured": true
+  },
+  {
+    "slug": "rioja-reserva",
+    "name": "Rioja Reserva",
+    "producer": "Marqués de Riscal",
+    "country": "Espagne",
+    "region": "Rioja",
+    "grape": "Tempranillo",
+    "color": "Rouge",
+    "style": "Boisé",
+    "price": 29.99,
+    "vintage": "2019",
+    "description": "Rouge structuré avec notes boisées.",
+    "featured": false
+  },
+  {
+    "slug": "chardonnay-californie",
+    "name": "Chardonnay Californie",
+    "producer": "Kendall-Jackson",
+    "country": "USA",
+    "region": "California",
+    "grape": "Chardonnay",
+    "color": "Blanc",
+    "style": "Riche",
+    "price": 24.99,
+    "vintage": "2023",
+    "description": "Blanc rond, beurré, vanillé.",
+    "featured": false
+  }
+]
