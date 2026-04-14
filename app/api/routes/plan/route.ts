@@ -647,7 +647,7 @@ export async function POST(req: Request) {
 
     const ranked = vineyards
       .map((vineyard: VineyardLite) => rankVineyard(vineyard, request))
-      .filter((item): item is RankedVineyard => Boolean(item))
+      .filter((item: RankedVineyard | null): item is RankedVineyard => Boolean(item))
       .sort((a, b) => b.finalScore - a.finalScore)
       .slice(0, totalStopsWanted);
 
