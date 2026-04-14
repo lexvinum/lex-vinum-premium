@@ -748,7 +748,7 @@ export async function POST(req: Request) {
         vineyardCountConsidered: vineyards.length,
         selectedStops: ranked.length,
       },
-      debug: ranked.map((item) => ({
+      debug: ranked.map((item: RankedVineyard) => ({
         id: item.id,
         name: item.name,
         distanceKm: item.distanceKm,
