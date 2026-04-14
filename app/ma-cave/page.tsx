@@ -35,7 +35,7 @@ export default async function MaCavePage() {
     getAllWines(),
   ]);
 
-  const normalizedItems = items.map((item) => ({
+  const normalizedItems = items.map((item: any) => ({
     ...item,
     wine: {
       ...item.wine,
