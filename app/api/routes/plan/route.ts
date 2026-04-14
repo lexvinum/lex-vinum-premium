@@ -692,7 +692,7 @@ export async function POST(req: Request) {
         longitude: dayStops[dayStops.length - 1].longitude!,
       };
 
-      const intermediates = dayStops.slice(0, -1).map((stop) => ({
+      const intermediates = dayStops.slice(0, -1).map((stop: RankedVineyard) => ({
         label: stop.name,
         latitude: stop.latitude!,
         longitude: stop.longitude!,
