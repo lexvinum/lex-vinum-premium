@@ -82,9 +82,7 @@ export default async function FavoritesPage() {
       : [];
 
   const orderedWines = favoriteSlugs
-    .map((slug) =>
-      wines.find((wine: (typeof wines)[number]) => wine.slug === slug)
-    )
+    .map((slug: string) => wines.find((wine: { slug: string }) => wine.slug === slug))
     .filter(
       (wine): wine is NonNullable<(typeof wines)[number]> => Boolean(wine)
     );
