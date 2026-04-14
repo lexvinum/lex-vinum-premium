@@ -183,7 +183,7 @@ export default async function BoutiquePage() {
 
         {otherProducts.length > 0 ? (
           <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-            {otherProducts.map((product) => (
+            {otherProducts.map((product: (typeof otherProducts)[number]) => (
               <Link
                 key={product.id}
                 href={`/boutique/${product.slug}`}
