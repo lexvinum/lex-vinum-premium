@@ -44,7 +44,7 @@ export default async function MaCavePage() {
     },
   }));
 
-  const normalizedWines = wines.map((wine) => ({
+  const normalizedWines = wines.map((wine: any) => ({
     ...wine,
     aromas: "aromas" in wine ? parseStringArray(wine.aromas) : parseStringArray(wine.aromasJson),
     tags: "tags" in wine ? parseStringArray(wine.tags) : parseStringArray(wine.tagsJson),
