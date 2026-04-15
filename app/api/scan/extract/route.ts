@@ -1,8 +1,8 @@
-import { prisma } from "@/lib/prisma";
-
 import { NextResponse } from "next/server";
-
+import { prisma } from "@/lib/prisma";
 import { findBestDbMatch } from "@/lib/ocr-db-matcher";
+import { buildWineCandidatesFromOcrLayout } from "@/lib/ocr-layout-parser";
+import { extractWinesFromOcr } from "@/lib/ocr-extract-wines";
 
 type OcrWordPayload = {
   text: string;
@@ -40,6 +40,12 @@ type Preferences = {
   serviceType?: string;
 };
 
+type RequestPayload = {
+  extractedText?: string;
+  lines?: OcrLinePayload[];
+  preferences?: Preferences;
+};
+
 type DetectedWine = {
   id: string;
   rawText: string;
@@ -61,6 +67,10 @@ type DetectedWine = {
   aromas?: string[];
   styleTags?: string[];
   wineProfile?: string;
+  dbMatch?: any | null;
+  dbMatchConfidence?: number;
+  dbMatchReason?: string;
+  matchedBy?: "ocr_fuzzy" | "none";
 };
 
 type RankedWine = {
@@ -77,12 +87,6 @@ type PremiumSelections = {
   bestValue?: RankedWine;
   safest?: RankedWine;
   adventurous?: RankedWine;
-};
-
-type RequestPayload = {
-  extractedText?: string;
-  lines?: OcrLinePayload[];
-  preferences?: Preferences;
 };
 
 type PremiumExplanation = {
@@ -110,32 +114,65 @@ type PremiumSelectionsWithExplanation = PremiumSelections & {
   adventurousExplanation?: PremiumExplanation;
 };
 
-const SECTION_HEADERS: Array<{ label: string; color?: string }> = [
-  { label: "vin au verre", color: "" },
-  { label: "vin au verre", color: "" },
-  { label: "verre", color: "" },
-  { label: "rouges", color: "rouge" },
-  { label: "rouge", color: "rouge" },
-  { label: "blancs", color: "blanc" },
-  { label: "blanc", color: "blanc" },
-  { label: "rosés", color: "rosé" },
-  { label: "rosé", color: "rosé" },
-  { label: "oranges", color: "orange" },
-  { label: "orange", color: "orange" },
-  { label: "champagnes", color: "effervescent" },
-  { label: "mousseux", color: "effervescent" },
-  { label: "bulles", color: "effervescent" },
-];
-
 const COUNTRY_KEYWORDS: Record<string, string[]> = {
-  France: ["france", "bourgogne", "bordeaux", "alsace", "loire", "rhone", "rhône", "beaujolais", "champagne", "chablis", "jura", "provence", "languedoc"],
-  Italie: ["italie", "italy", "toscane", "toscana", "piemonte", "piémont", "veneto", "sicile", "sicilia", "barolo", "barbaresco", "chianti", "etna", "langhe"],
-  Espagne: ["espagne", "spain", "rioja", "ribera", "duero", "priorat", "rueda", "castilla", "jerez", "cava"],
+  France: [
+    "france",
+    "bourgogne",
+    "bordeaux",
+    "alsace",
+    "loire",
+    "rhone",
+    "rhône",
+    "beaujolais",
+    "champagne",
+    "chablis",
+    "jura",
+    "provence",
+    "languedoc",
+  ],
+  Italie: [
+    "italie",
+    "italy",
+    "toscane",
+    "toscana",
+    "piemonte",
+    "piémont",
+    "veneto",
+    "sicile",
+    "sicilia",
+    "barolo",
+    "barbaresco",
+    "chianti",
+    "etna",
+    "langhe",
+  ],
+  Espagne: [
+    "espagne",
+    "spain",
+    "rioja",
+    "ribera",
+    "duero",
+    "priorat",
+    "rueda",
+    "castilla",
+    "jerez",
+    "cava",
+  ],
   Portugal: ["portugal", "douro", "dao", "dão", "vinho verde", "alentejo"],
   Argentine: ["argentine", "argentina", "mendoza", "salta", "patagonia"],
   Chili: ["chili", "chile", "maipo", "colchagua", "casablanca"],
   Canada: ["canada", "québec", "quebec", "ontario", "okanagan", "niagara"],
-  "États-Unis": ["usa", "etats-unis", "états-unis", "united states", "california", "napa", "sonoma", "oregon", "washington"],
+  "États-Unis": [
+    "usa",
+    "etats-unis",
+    "états-unis",
+    "united states",
+    "california",
+    "napa",
+    "sonoma",
+    "oregon",
+    "washington",
+  ],
   Australie: ["australie", "australia", "barossa", "yarra", "mclaren"],
   Allemagne: ["allemagne", "germany", "mosel", "rheingau", "pfalz"],
   Autriche: ["autriche", "austria", "wachau", "kamptal", "burgenland"],
@@ -205,9 +242,25 @@ const AROMA_LIBRARY: Record<string, string[]> = {
   floral: ["floral", "fleur", "jasmin", "rose", "violette", "camomille"],
   mineral: ["minéral", "mineral", "salin", "craie", "pierre", "iode"],
   "red-fruit": ["cerise", "fraise", "framboise", "groseille", "grenade"],
-  "black-fruit": ["mûre", "mure", "cassis", "prune", "bleuet", "myrtille", "fruit noir"],
+  "black-fruit": [
+    "mûre",
+    "mure",
+    "cassis",
+    "prune",
+    "bleuet",
+    "myrtille",
+    "fruit noir",
+  ],
   tropical: ["ananas", "mangue", "fruit de la passion", "passion", "papaye"],
-  spice: ["poivre", "épice", "epice", "réglisse", "reglisse", "clou de girofle", "cannelle"],
+  spice: [
+    "poivre",
+    "épice",
+    "epice",
+    "réglisse",
+    "reglisse",
+    "clou de girofle",
+    "cannelle",
+  ],
   oak: ["boisé", "boise", "barrique", "vanille", "toast", "fumé", "fume"],
   earth: ["terre", "sous-bois", "champignon", "truffe", "cuir"],
   herbal: ["herbacé", "herbace", "menthe", "thym", "romarin", "eucalyptus", "fenouil"],
@@ -223,7 +276,7 @@ function normalizeText(value: string) {
 }
 
 function cleanSpaces(value: string) {
-  return value.replace(/\s+/g, " ").trim();
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function parseJsonArrayField(value: string | null | undefined): string[] {
@@ -231,11 +284,8 @@ function parseJsonArrayField(value: string | null | undefined): string[] {
 
   try {
     const parsed = JSON.parse(value);
-
     if (Array.isArray(parsed)) {
-      return parsed
-        .map((item) => String(item).trim())
-        .filter(Boolean);
+      return parsed.map((item) => String(item).trim()).filter(Boolean);
     }
   } catch {
     // ignore
@@ -254,69 +304,6 @@ function clamp(value: number, min = 0, max = 100) {
 function average(nums: number[]) {
   if (!nums.length) return 0;
   return nums.reduce((sum, n) => sum + n, 0) / nums.length;
-}
-
-function looksLikeSectionHeader(text: string) {
-  const normalized = normalizeText(text);
-
-  if (!normalized) return false;
-  if (normalized.length > 50) return false;
-
-  return SECTION_HEADERS.some((entry) => normalized.includes(normalizeText(entry.label)));
-}
-
-function findSectionColor(text: string) {
-  const normalized = normalizeText(text);
-
-  for (const entry of SECTION_HEADERS) {
-    if (entry.color && normalized.includes(normalizeText(entry.label))) {
-      return entry.color;
-    }
-  }
-
-  return "";
-}
-
-function looksLikePriceOnly(text: string) {
-  const cleaned = text.replace(/\s+/g, "");
-  return /^(\$)?\d{1,3}([.,]\d{2})?$/.test(cleaned);
-}
-
-function looksLikeGarbage(text: string) {
-  const normalized = normalizeText(text);
-
-  if (!normalized) return true;
-  if (normalized.length < 3) return true;
-  if (/^(menu|carte|vin|vins|prix|btl|bouteille|verre)$/.test(normalized)) return true;
-  if (/^[\d\s$.,/-]+$/.test(normalized) && !/\d{4}/.test(normalized)) return true;
-
-  return false;
-}
-
-function parsePrice(text: string) {
-  const matches = [...text.matchAll(/(?:\$|cad)?\s?(\d{1,3}(?:[.,]\d{2})?)/gi)];
-  if (!matches.length) return null;
-
-  const candidates = matches
-    .map((m) => ({
-      raw: m[0].trim(),
-      value: Number(m[1].replace(",", ".")),
-    }))
-    .filter((entry) => !Number.isNaN(entry.value))
-    .filter((entry) => entry.value >= 6 && entry.value <= 600);
-
-  if (!candidates.length) return null;
-
-  const last = candidates[candidates.length - 1];
-  return {
-    text: last.raw,
-    value: last.value,
-  };
-}
-
-function extractVintage(text: string) {
-  const match = text.match(/\b(19\d{2}|20\d{2})\b/);
-  return match?.[1];
 }
 
 function parseVintageNumber(value?: string | number | null): number | null {
@@ -556,256 +543,55 @@ function inferWineProfile(wine: Partial<DetectedWine>) {
   return pieces.join(" • ");
 }
 
-function titleCaseCandidate(value: string) {
-  return value
-    .split(/\s+/)
-    .map((word) => {
-      if (!word) return word;
-      if (/^\d/.test(word)) return word;
-      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-    })
-    .join(" ");
-}
-
-function cleanupWineName(text: string) {
-  let value = cleanSpaces(
-    text
-      .replace(/\b(19\d{2}|20\d{2})\b/g, " ")
-      .replace(/(?:\$|cad)?\s?\d{1,3}(?:[.,]\d{2})?/gi, " ")
-      .replace(/\b(rouge|blanc|rosé|rose|orange|champagne|mousseux|verre|bouteille)\b/gi, " ")
-      .replace(/[|•·]+/g, " ")
-  );
-
-  value = value.replace(/\s{2,}/g, " ").trim();
-
-  if (!value) return "";
-  if (value.length < 5) return "";
-  if (!/[A-Za-zÀ-ÿ]/.test(value)) return "";
-
-  return titleCaseCandidate(value);
-}
-
-function scoreNameCandidate(name: string) {
-  let score = 0;
-  const words = name.trim().split(/\s+/).filter(Boolean);
-
-  if (words.length >= 2) score += 20;
-  if (words.length >= 3) score += 15;
-  if (words.length >= 4) score += 10;
-  if (name.length >= 12) score += 15;
-  if (/[A-ZÀ-Ý][a-zà-ÿ]/.test(name)) score += 15;
-  if (/\b(Chateau|Domaine|Dom\.?|Clos|Villa|Tenuta|Bodega|Maison|Cantina|Podere|Azienda)\b/i.test(name)) {
-    score += 20;
-  }
-
-  if (/\bvin\b/i.test(name)) score -= 10;
-  if (/prix|verre|bouteille|menu/i.test(name)) score -= 20;
-
-  return score;
-}
-
-function extractBestNameFromBlock(rawText: string) {
-  const lines = rawText
-    .split("\n")
-    .map((line) => cleanSpaces(line))
-    .filter(Boolean);
-
-  const candidates = lines
-    .map((line) => cleanupWineName(line))
-    .filter(Boolean)
-    .map((name) => ({ name, score: scoreNameCandidate(name) }))
-    .sort((a, b) => b.score - a.score);
-
-  return candidates[0]?.name || cleanupWineName(rawText);
-}
-
-function guessProducerFromName(name: string) {
-  const words = name.split(/\s+/);
-  if (words.length >= 2) {
-    return words.slice(0, Math.min(2, words.length)).join(" ");
-  }
-  return "";
-}
-
-function computeBlockConfidence(lines: OcrLinePayload[]) {
-  const confs = lines
-    .map((line) => (typeof line.confidence === "number" ? line.confidence : null))
-    .filter((value): value is number => value !== null);
-
-  if (!confs.length) return 0.65;
-  return clamp(average(confs) / 100, 0.2, 0.98);
-}
-
-function sortLinesTopToBottom(lines: OcrLinePayload[]) {
-  return [...lines].sort((a, b) => {
-    const ay = a.bbox?.y0 ?? 0;
-    const by = b.bbox?.y0 ?? 0;
-    if (Math.abs(ay - by) > 8) return ay - by;
-
-    const ax = a.bbox?.x0 ?? 0;
-    const bx = b.bbox?.x0 ?? 0;
-    return ax - bx;
-  });
-}
-
-function groupLinesIntoBlocks(lines: OcrLinePayload[]) {
-  const sorted = sortLinesTopToBottom(lines);
-  const blocks: { lines: OcrLinePayload[]; sectionColor?: string }[] = [];
-
-  let current: OcrLinePayload[] = [];
-  let currentSectionColor = "";
-  let lastBottom = -1;
-
-  for (const line of sorted) {
-    const text = cleanSpaces(line.text || "");
-    if (!text) continue;
-
-    if (looksLikeSectionHeader(text)) {
-      if (current.length) {
-        blocks.push({ lines: current, sectionColor: currentSectionColor || undefined });
-        current = [];
-      }
-      currentSectionColor = findSectionColor(text);
-      lastBottom = line.bbox?.y1 ?? lastBottom;
-      continue;
-    }
-
-    const y0 = line.bbox?.y0 ?? 0;
-    const gap = lastBottom >= 0 ? y0 - lastBottom : 0;
-
-    if (current.length === 0) {
-      current.push(line);
-      lastBottom = line.bbox?.y1 ?? y0;
-      continue;
-    }
-
-    const lineIsPriceOnly = looksLikePriceOnly(text);
-    const prevLine = current[current.length - 1];
-    const prevText = cleanSpaces(prevLine.text || "");
-    const prevHasPrice = !!parsePrice(prevText);
-    const currentHasPrice = !!parsePrice(text);
-
-    const shouldStartNewBlock =
-      gap > 24 ||
-      (currentHasPrice && prevHasPrice) ||
-      (!lineIsPriceOnly && prevHasPrice && /[A-Za-zÀ-ÿ]/.test(text) && gap > 8);
-
-    if (shouldStartNewBlock) {
-      blocks.push({ lines: current, sectionColor: currentSectionColor || undefined });
-      current = [line];
-    } else {
-      current.push(line);
-    }
-
-    lastBottom = line.bbox?.y1 ?? y0;
-  }
-
-  if (current.length) {
-    blocks.push({ lines: current, sectionColor: currentSectionColor || undefined });
-  }
-
-  return blocks;
-}
-
-function alignNearbyPrice(
-  blockLines: OcrLinePayload[],
-  allLines: OcrLinePayload[]
-): { price?: number; priceText?: string } {
-  const joined = blockLines.map((line) => line.text).join(" ");
-  const directPrice = parsePrice(joined);
-  if (directPrice) {
-    return {
-      price: directPrice.value,
-      priceText: directPrice.text,
-    };
-  }
-
-  const blockRight = Math.max(...blockLines.map((line) => line.bbox?.x1 ?? 0));
-  const blockTop = Math.min(...blockLines.map((line) => line.bbox?.y0 ?? 0));
-  const blockBottom = Math.max(...blockLines.map((line) => line.bbox?.y1 ?? 0));
-  const blockCenterY = (blockTop + blockBottom) / 2;
-
-  let bestCandidate: { score: number; price: number; priceText: string } | null = null;
-
-  for (const line of allLines) {
-    const text = cleanSpaces(line.text || "");
-    const price = parsePrice(text);
-    if (!price) continue;
-
-    const x0 = line.bbox?.x0 ?? 0;
-    const y0 = line.bbox?.y0 ?? 0;
-    const y1 = line.bbox?.y1 ?? 0;
-    const centerY = (y0 + y1) / 2;
-    const deltaY = Math.abs(centerY - blockCenterY);
-    const deltaX = x0 - blockRight;
-
-    if (deltaX < -20) continue;
-    if (deltaY > 26) continue;
-
-    const score = 100 - deltaY * 2 - Math.max(0, deltaX) * 0.08;
-
-    if (!bestCandidate || score > bestCandidate.score) {
-      bestCandidate = {
-        score,
-        price: price.value,
-        priceText: price.text,
-      };
-    }
-  }
-
-  return bestCandidate
-    ? { price: bestCandidate.price, priceText: bestCandidate.priceText }
-    : {};
-}
-
-function buildWineFromBlock(
-  block: { lines: OcrLinePayload[]; sectionColor?: string },
-  allLines: OcrLinePayload[]
-): DetectedWine | null {
-  const rawText = block.lines.map((line) => cleanSpaces(line.text)).join("\n").trim();
-  if (!rawText) return null;
-  if (looksLikeGarbage(rawText)) return null;
-
-  const name = extractBestNameFromBlock(rawText);
-  if (!name || name.split(/\s+/).length < 2) return null;
-
-  const vintage = extractVintage(rawText);
-  const alignedPrice = alignNearbyPrice(block.lines, allLines);
-  const color = detectColor(rawText, block.sectionColor || "");
-  const country = detectCountry(rawText);
-  const region = detectRegion(rawText);
-  const grape = detectGrape(rawText);
+function enrichWineCandidate(base: {
+  id: string;
+  rawText: string;
+  name: string;
+  producer?: string;
+  vintage?: string;
+  price?: number;
+  priceText?: string;
+  color?: string;
+  country?: string;
+  region?: string;
+  grape?: string;
+  confidence?: number;
+}): DetectedWine {
+  const rawText = cleanSpaces(base.rawText || "");
+  const color = base.color || detectColor(rawText, "");
+  const country = base.country || detectCountry(rawText);
+  const region = base.region || detectRegion(rawText);
+  const grape = base.grape || detectGrape(rawText);
   const aromas = inferAromas(rawText, grape, region);
-  const confidence = computeBlockConfidence(block.lines);
 
-  const baseWine: DetectedWine = {
-    id: crypto.randomUUID(),
+  const wine: DetectedWine = {
+    id: base.id,
     rawText,
-    name,
-    producer: guessProducerFromName(name),
-    vintage,
-    price: alignedPrice.price,
-    priceText: alignedPrice.priceText,
+    name: cleanSpaces(base.name),
+    producer: base.producer ? cleanSpaces(base.producer) : undefined,
+    vintage: base.vintage,
+    price: base.price,
+    priceText: base.priceText,
     color,
     country,
     region,
     grape,
-    confidence,
+    confidence: base.confidence,
     aromas,
     styleTags: [],
     wineProfile: "",
   };
 
-  const structure = inferStructure(baseWine);
-  baseWine.body = structure.body;
-  baseWine.acidity = structure.acidity;
-  baseWine.tannin = structure.tannin;
-  baseWine.minerality = structure.minerality;
-  baseWine.sweetness = structure.sweetness;
-  baseWine.styleTags = inferStyleTags(baseWine);
-  baseWine.wineProfile = inferWineProfile(baseWine);
+  const structure = inferStructure(wine);
+  wine.body = structure.body;
+  wine.acidity = structure.acidity;
+  wine.tannin = structure.tannin;
+  wine.minerality = structure.minerality;
+  wine.sweetness = structure.sweetness;
+  wine.styleTags = inferStyleTags(wine);
+  wine.wineProfile = inferWineProfile(wine);
 
-  return baseWine;
+  return wine;
 }
 
 function dedupeWines(wines: DetectedWine[]) {
@@ -818,10 +604,12 @@ function dedupeWines(wines: DetectedWine[]) {
         wine.vintage || "",
         wine.region || "",
         wine.country || "",
+        wine.price || "",
       ].join(" | ")
     );
 
     const existing = map.get(key);
+
     if (!existing) {
       map.set(key, wine);
       continue;
@@ -855,22 +643,22 @@ function parsePreferenceScale(value?: string) {
 
   const mapping: Record<string, number> = {
     "tres leger": 1,
-    "leger": 2,
-    "moyen": 3,
-    "moyenne": 3,
-    "ample": 5,
-    "faible": 1,
-    "souples": 1,
-    "souple": 1,
-    "moyens": 3,
-    "marques": 5,
-    "marque": 5,
-    "elevee": 5,
-    "eleve": 5,
-    "sec": 1,
+    leger: 2,
+    moyen: 3,
+    moyenne: 3,
+    ample: 5,
+    faible: 1,
+    souples: 1,
+    souple: 1,
+    moyens: 3,
+    marques: 5,
+    marque: 5,
+    elevee: 5,
+    eleve: 5,
+    sec: 1,
     "demi-sec": 3,
-    "moelleux": 4,
-    "doux": 5,
+    moelleux: 4,
+    doux: 5,
   };
 
   if (mapping[v] !== undefined) return mapping[v];
@@ -887,7 +675,9 @@ function normalizeColorPreference(value?: string) {
   if (v.includes("blan")) return "blanc";
   if (v.includes("rose")) return "rosé";
   if (v.includes("orang")) return "orange";
-  if (v.includes("bull") || v.includes("mouss") || v.includes("spark")) return "effervescent";
+  if (v.includes("bull") || v.includes("mouss") || v.includes("spark")) {
+    return "effervescent";
+  }
   return "";
 }
 
@@ -1090,7 +880,11 @@ function rankWines(wines: DetectedWine[], preferences: Preferences): RankedWine[
       const pairing = pairingScore(wine, preferences);
       const price = priceFit(wine, preferences);
       const value = valueScore(wine, preferences);
-      const confidenceScore = clamp(Math.round((wine.confidence || 0.65) * 100), 0, 100);
+      const confidenceScore = clamp(
+        Math.round((wine.confidence || 0.65) * 100),
+        0,
+        100
+      );
 
       const completeness = clamp(
         [
@@ -1164,7 +958,11 @@ function pickPremiumSelections(ranked: RankedWine[]): PremiumSelections {
 
   const adventurous =
     [...ranked]
-      .filter((item) => item.wine.styleTags?.includes("gastronomique") || item.wine.styleTags?.includes("trame minérale"))
+      .filter(
+        (item) =>
+          item.wine.styleTags?.includes("gastronomique") ||
+          item.wine.styleTags?.includes("trame minérale")
+      )
       .sort((a, b) => {
         const advA =
           a.score * 0.6 +
@@ -1177,7 +975,9 @@ function pickPremiumSelections(ranked: RankedWine[]): PremiumSelections {
           (b.wine.acidity || 0) * 5 +
           ((b.wine.styleTags || []).includes("gastronomique") ? 12 : 0);
         return advB - advA;
-      })[0] || ranked[Math.min(2, ranked.length - 1)] || bestOverall;
+      })[0] ||
+    ranked[Math.min(2, ranked.length - 1)] ||
+    bestOverall;
 
   return {
     bestOverall,
@@ -1198,15 +998,15 @@ function buildSommelierPhrase(
   const styleTags = wine.styleTags || [];
 
   if (mode === "bestValue") {
-    return `C’est le choix le plus intelligent si vous voulez maximiser le plaisir sans dépasser inutilement en prix.`;
+    return "C’est le choix le plus intelligent si vous voulez maximiser le plaisir sans dépasser inutilement en prix.";
   }
 
   if (mode === "safest") {
-    return `C’est la bouteille la plus rassurante de la sélection : cohérente, lisible et facile à recommander sans risque.`;
+    return "C’est la bouteille la plus rassurante de la sélection : cohérente, lisible et facile à recommander sans risque.";
   }
 
   if (mode === "adventurous") {
-    return `Si vous voulez une bouteille avec un peu plus de relief et de personnalité, c’est celle qui a le plus d’intérêt dans cette sélection.`;
+    return "Si vous voulez une bouteille avec un peu plus de relief et de personnalité, c’est celle qui a le plus d’intérêt dans cette sélection.";
   }
 
   if (dish) {
@@ -1214,10 +1014,10 @@ function buildSommelierPhrase(
   }
 
   if (styleTags.includes("gastronomique")) {
-    return `C’est la bouteille la plus aboutie si vous cherchez un vin avec de la présence et une vraie tenue à table.`;
+    return "C’est la bouteille la plus aboutie si vous cherchez un vin avec de la présence et une vraie tenue à table.";
   }
 
-  return `C’est le choix le plus juste et le plus complet dans la sélection actuelle.`;
+  return "C’est le choix le plus juste et le plus complet dans la sélection actuelle.";
 }
 
 function buildPremiumExplanation(
@@ -1233,7 +1033,7 @@ function buildPremiumExplanation(
     average([
       breakdown.color || 0,
       breakdown.completeness || 0,
-      ((wine.styleTags || []).length ? 82 : 64),
+      (wine.styleTags || []).length ? 82 : 64,
     ])
   );
 
@@ -1243,10 +1043,10 @@ function buildPremiumExplanation(
   const priceFitValue = breakdown.price || 0;
 
   const complexityBase =
-    ((wine.body || 0) * 12) +
-    ((wine.acidity || 0) * 10) +
-    ((wine.minerality || 0) * 10) +
-    ((wine.tannin || 0) * 8) +
+    (wine.body || 0) * 12 +
+    (wine.acidity || 0) * 10 +
+    (wine.minerality || 0) * 10 +
+    (wine.tannin || 0) * 8 +
     ((wine.styleTags || []).includes("gastronomique") ? 12 : 0) +
     ((wine.styleTags || []).includes("trame minérale") ? 8 : 0);
 
@@ -1394,12 +1194,6 @@ function fallbackLinesFromText(text: string): OcrLinePayload[] {
     }));
 }
 
-function normalizeForMatch(value: string) {
-  return normalizeText(value)
-    .replace(/[^a-z0-9 ]/g, "")
-    .trim();
-}
-
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as RequestPayload;
@@ -1421,81 +1215,97 @@ export async function POST(req: Request) {
       );
     }
 
-    const blocks = groupLinesIntoBlocks(inputLines);
-    let wines = blocks
-      .map((block) => buildWineFromBlock(block, inputLines))
-      .filter((wine): wine is DetectedWine => Boolean(wine));
+    const layoutCandidates = buildWineCandidatesFromOcrLayout({
+      extractedText,
+      lines: inputLines,
+    });
 
-    wines = dedupeWines(wines)
-      .filter((wine) => wine.name.length >= 5)
-      .filter((wine) => wine.name.split(/\s+/).length >= 2)
-      .slice(0, 80);
-
-        // 🔥 NOUVEAU : fetch DB
-      const dbWines = await prisma.wine.findMany();
-
-      // 🔥 matching OCR → DB
-      const matchedWines: DetectedWine[] = wines.map((wine) => {
-        const match = findBestDbMatch(
-          {
+    const fallbackCandidates =
+      layoutCandidates.length >= 3
+        ? []
+        : extractWinesFromOcr(extractedText).map((wine) => ({
+            id: wine.id,
+            rawText: wine.rawBlock,
             name: wine.name,
             producer: wine.producer,
+            vintage: wine.vintage,
+            price: wine.price,
+            priceText: wine.priceText,
+            color: wine.color,
             country: wine.country,
             region: wine.region,
-            color: wine.color,
-            style: wine.wineProfile,
-            price: wine.price ?? null,
-            vintage: parseVintageNumber(wine.vintage),
-          },
-          dbWines
-        );
+            grape: wine.grape,
+            confidence:
+              typeof wine.confidence === "number"
+                ? Math.max(0.2, Math.min(0.99, wine.confidence / 100))
+                : 0.6,
+          }));
 
-        if (!match.wine) {
-          return {
-            ...wine,
-            dbMatch: null,
-            dbMatchConfidence: match.confidence,
-            dbMatchReason: match.reason,
-            matchedBy: "none",
-          };
-        }
+    let wines = [...layoutCandidates, ...fallbackCandidates]
+      .map((candidate) => enrichWineCandidate(candidate))
+      .filter((wine) => wine.name.length >= 5)
+      .filter((wine) => wine.name.split(/\s+/).length >= 2);
 
-        const dbWine = match.wine;
+    wines = dedupeWines(wines).slice(0, 80);
 
-        const matchedAromas = parseJsonArrayField(dbWine.aromasJson);
-        const matchedTags = parseJsonArrayField(dbWine.tagsJson);
+    const dbWines = await prisma.wine.findMany();
 
+    const matchedWines: DetectedWine[] = wines.map((wine) => {
+      const match = findBestDbMatch(
+        {
+          name: wine.name,
+          producer: wine.producer,
+          country: wine.country,
+          region: wine.region,
+          color: wine.color,
+          style: wine.wineProfile,
+          price: wine.price ?? null,
+          vintage: parseVintageNumber(wine.vintage),
+        },
+        dbWines
+      );
+
+      if (!match.wine) {
         return {
           ...wine,
-
-          // 🔥 DATA DB enrichie
-          name: dbWine.name ?? wine.name,
-          producer: dbWine.producer ?? wine.producer,
-          vintage:
-            dbWine.vintage !== null && dbWine.vintage !== undefined
-              ? String(dbWine.vintage)
-              : wine.vintage ? String(wine.vintage) : undefined,
-          price: dbWine.price ?? wine.price,
-          color: dbWine.color ?? wine.color,
-          country: dbWine.country ?? wine.country,
-          region: dbWine.region ?? wine.region,
-          grape: dbWine.grape ?? wine.grape,
-
-          aromas: matchedAromas.length ? matchedAromas : wine.aromas,
-          styleTags: matchedTags.length ? matchedTags : wine.styleTags,
-          wineProfile: dbWine.description ?? wine.wineProfile,
-
-          confidence: Math.max(wine.confidence || 0, 0.9),
-
-          // 🔥 ÉTAPE 3 (IMPORTANT)
-          dbMatch: dbWine,
+          dbMatch: null,
           dbMatchConfidence: match.confidence,
           dbMatchReason: match.reason,
-          matchedBy: "ocr_fuzzy",
+          matchedBy: "none",
         };
-      });
+      }
 
-      const rankedWines = rankWines(matchedWines, preferences);
+      const dbWine = match.wine;
+      const matchedAromas = parseJsonArrayField(dbWine.aromasJson);
+      const matchedTags = parseJsonArrayField(dbWine.tagsJson);
+
+      return {
+        ...wine,
+        name: dbWine.name ?? wine.name,
+        producer: dbWine.producer ?? wine.producer,
+        vintage:
+          dbWine.vintage !== null && dbWine.vintage !== undefined
+            ? String(dbWine.vintage)
+            : wine.vintage
+            ? String(wine.vintage)
+            : undefined,
+        price: dbWine.price ?? wine.price,
+        color: dbWine.color ?? wine.color,
+        country: dbWine.country ?? wine.country,
+        region: dbWine.region ?? wine.region,
+        grape: dbWine.grape ?? wine.grape,
+        aromas: matchedAromas.length ? matchedAromas : wine.aromas,
+        styleTags: matchedTags.length ? matchedTags : wine.styleTags,
+        wineProfile: dbWine.description ?? wine.wineProfile,
+        confidence: Math.max(wine.confidence || 0, 0.9),
+        dbMatch: dbWine,
+        dbMatchConfidence: match.confidence,
+        dbMatchReason: match.reason,
+        matchedBy: "ocr_fuzzy",
+      };
+    });
+
+    const rankedWines = rankWines(matchedWines, preferences);
     const premiumSelections = pickPremiumSelections(rankedWines);
     const premiumSelectionsWithExplanation = attachPremiumExplanations(
       premiumSelections,
@@ -1504,10 +1314,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
-      extractedText: extractedText,
+      extractedText,
       linesCount: inputLines.length,
       wines: matchedWines,
-      rankedWines: rankedWines,
+      rankedWines,
       premiumSelections: premiumSelectionsWithExplanation,
     });
   } catch (error) {
