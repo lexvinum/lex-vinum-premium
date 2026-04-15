@@ -1,2 +1,8 @@
-{"timestamp":"00:00:01.427","source":"Server","level":"LOG","message":""}
-{"timestamp":"00:09:35.626","source":"Server","level":"LOG","message":"○ Compiling /scan ..."}
+{"timestamp":"00:00:01.381","source":"Server","level":"LOG","message":""}
+{"timestamp":"00:00:21.324","source":"Server","level":"LOG","message":"○ Compiling / ..."}
+{"timestamp":"00:00:27.875","source":"Browser","level":"WARN","message":"Google Maps JavaScript API has been loaded directly without loading=async. This can result in suboptimal performance. For best-practice loading patterns please see https://goo.gle/js-api-loading"}
+{"timestamp":"00:00:27.883","source":"Server","level":"WARN","message":"[browser] \"\\u001b[33mGoogle Maps JavaScript API has been loaded directly without loading=async. This can result in suboptimal performance. For best-practice loading patterns please see https://goo.gle/js-api-loading\\u001b[39m\" \"\\u001b[2m(https://maps.googleapis.com/maps/api/js:1057:261)\\u001b[22m\""}
+{"timestamp":"00:00:27.888","source":"Browser","level":"WARN","message":"\u001b[33mGoogle Maps JavaScript API has been loaded directly without loading=async. This can result in suboptimal performance. For best-practice loading patterns please see https://goo.gle/js-api-loading\u001b[39m"}
+{"timestamp":"00:00:30.044","source":"Browser","level":"WARN","message":"<gmp-advanced-marker>: Please use addEventListener('gmp-click', ...) instead of addEventListener('click', ...)."}
+{"timestamp":"00:00:30.051","source":"Server","level":"WARN","message":"[browser] \"\\u001b[33m<gmp-advanced-marker>: Please use addEventListener('gmp-click', ...) instead of addEventListener('click', ...).\\u001b[39m\" \"\\u001b[2m(https://maps.googleapis.com/maps/api/js:934:189)\\u001b[22m\""}
+{"timestamp":"00:00:30.052","source":"Browser","level":"WARN","message":"\u001b[33m<gmp-advanced-marker>: Please use addEventListener('gmp-click', ...) instead of addEventListener('click', ...).\u001b[39m"}

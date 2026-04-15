@@ -59,6 +59,10 @@ type DetectedWine = {
   aromas?: string[];
   styleTags?: string[];
   wineProfile?: string;
+  dbMatch?: any | null;
+  dbMatchConfidence?: number;
+  dbMatchReason?: string;
+  matchedBy?: "ocr_fuzzy" | "none";
 };
 
 type RankedWine = {
@@ -84,7 +88,31 @@ type ExtractApiResponse = {
   wines?: DetectedWine[];
   rankedWines?: RankedWine[];
   premiumSelections?: PremiumSelections;
+  databaseUnavailable?: boolean;
+  debug?: {
+    databaseErrorMessage?: string | null;
+  };
   error?: string;
+};
+
+type DisplayScanWine = {
+  id: string;
+  rawName: string;
+  displayName: string;
+  producer: string | null;
+  country: string | null;
+  region: string | null;
+  appellation: string | null;
+  vintage: string | null;
+  price: string | null;
+  format: string | null;
+  grapes: string[];
+  color: string | null;
+  confidenceLabel: string;
+  isMatched: boolean;
+  image: string | null;
+  saqUrl: string | null;
+  sourceWine: DetectedWine;
 };
 
 const INITIAL_PREFERENCES: Preferences = {
@@ -97,6 +125,323 @@ const INITIAL_PREFERENCES: Preferences = {
   aroma: "",
   dish: "",
 };
+
+const OCR_NOISE_TOKENS = new Set([
+  "saq",
+  "succursale",
+  "prix",
+  "bouteille",
+  "format",
+  "bio",
+  "regular",
+  "régulier",
+  "regulier",
+  "nouveau",
+  "promo",
+  "en",
+  "ligne",
+  "code",
+  "produit",
+  "carton",
+  "pastille",
+  "notes",
+  "point",
+  "points",
+  "ml",
+  "cl",
+  "l",
+]);
+
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function stripWeirdPunctuation(value: string) {
+  return value
+    .replace(/[«»“”"]/g, "")
+    .replace(/[|_/\\]+/g, " ")
+    .replace(/[•·]+/g, " ")
+    .replace(/\(\s*\)/g, " ")
+    .replace(/\[\s*\]/g, " ")
+    .replace(/\s*[-–—]\s*/g, " ")
+    .replace(/[^\p{L}\p{N}\s'.,\-&]/gu, " ");
+}
+
+function toTitleCaseSmart(value: string) {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => {
+      const lower = word.toLowerCase();
+
+      if (
+        ["de", "du", "des", "la", "le", "les", "et", "of", "the", "y"].includes(
+          lower
+        )
+      ) {
+        return lower;
+      }
+
+      if (/^[A-Z0-9&.-]+$/.test(word) && word.length <= 4) {
+        return word;
+      }
+
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(" ")
+    .replace(/\bDe La\b/g, "de la")
+    .replace(/\bDe\b/g, "de")
+    .replace(/\bDu\b/g, "du")
+    .replace(/\bDes\b/g, "des");
+}
+
+function cleanWineName(raw?: string | null) {
+  if (!raw) return "";
+
+  let value = raw;
+
+  value = stripWeirdPunctuation(value);
+  value = normalizeWhitespace(value);
+
+  const tokens = value
+    .split(" ")
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((token) => {
+      const lower = token.toLowerCase();
+
+      if (OCR_NOISE_TOKENS.has(lower)) return false;
+      if (/^\d{1,4}(ml|cl|l)?$/i.test(lower)) return false;
+      if (/^\$?\d+[.,]?\d*$/.test(lower)) return false;
+      if (/^[^\p{L}\p{N}]+$/u.test(lower)) return false;
+
+      return true;
+    });
+
+  value = tokens.join(" ");
+
+  value = value
+    .replace(/\b([A-Za-zÀ-ÿ]{2,})\s+\1\b/giu, "$1")
+    .replace(/\bvin vin\b/gi, "vin")
+    .replace(/\brouge rouge\b/gi, "rouge")
+    .replace(/\bblanc blanc\b/gi, "blanc")
+    .replace(/\brosé rosé\b/gi, "rosé");
+
+  value = normalizeWhitespace(value);
+
+  if (value.length < 3) return "";
+
+  return toTitleCaseSmart(value);
+}
+
+function normalizeVintage(value: unknown): string | null {
+  if (value == null) return null;
+
+  const str = String(value).trim();
+  const match = str.match(/\b(19\d{2}|20\d{2})\b/);
+
+  return match ? match[1] : null;
+}
+
+function normalizePrice(value: unknown, fallback?: unknown): string | null {
+  const raw = value ?? fallback;
+  if (raw == null || raw === "") return null;
+
+  const str = String(raw).replace(",", ".").trim();
+  const num = Number(str.replace(/[^\d.]/g, ""));
+
+  if (!Number.isFinite(num) || num <= 0 || num > 10000) {
+    return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+  }
+
+  return `${num.toFixed(2)} $`;
+}
+
+function normalizeFormat(value: unknown): string | null {
+  if (value == null || value === "") return null;
+
+  const num = Number(String(value).replace(/[^\d.]/g, ""));
+  if (!Number.isFinite(num) || num <= 0) return null;
+
+  return `${Math.round(num)} ml`;
+}
+
+function normalizeGrapes(value: unknown, aromas?: unknown): string[] {
+  if (value) {
+    if (Array.isArray(value)) {
+      return value
+        .map((g) => String(g).trim())
+        .filter(Boolean)
+        .slice(0, 4);
+    }
+
+    return String(value)
+      .split(/[,;/]/)
+      .map((g) => g.trim())
+      .filter(Boolean)
+      .slice(0, 4);
+  }
+
+  if (Array.isArray(aromas)) {
+    return aromas
+      .map((a) => String(a).trim())
+      .filter(Boolean)
+      .slice(0, 4);
+  }
+
+  return [];
+}
+
+function looksLikeUsefulWine(row: DetectedWine) {
+  const name = cleanWineName(row.name || row.rawText);
+
+  if (!name) return false;
+  if (name.length < 4) return false;
+
+  const wordCount = name.split(" ").length;
+  if (wordCount > 12) return false;
+
+  const hasAnyUsefulField =
+    !!name ||
+    !!row.producer ||
+    !!row.country ||
+    !!row.region ||
+    !!normalizeVintage(row.vintage) ||
+    !!normalizePrice(row.price, row.priceText);
+
+  if (!hasAnyUsefulField) return false;
+
+  const lower = name.toLowerCase();
+  if (
+    lower.includes("code produit") ||
+    lower.includes("succursale") ||
+    lower.includes("mise en marché") ||
+    lower.includes("dégustation") ||
+    lower.includes("pastille")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function confidenceLabel(row: DetectedWine, databaseUnavailable: boolean) {
+  if (!databaseUnavailable && row.dbMatch) return "Correspondance trouvée";
+  if (
+    !databaseUnavailable &&
+    typeof row.dbMatchConfidence === "number" &&
+    row.dbMatchConfidence >= 0.85
+  ) {
+    return "Très probable";
+  }
+  if (
+    !databaseUnavailable &&
+    typeof row.dbMatchConfidence === "number" &&
+    row.dbMatchConfidence >= 0.6
+  ) {
+    return "Probable";
+  }
+
+  if (typeof row.confidence === "number" && row.confidence >= 80) {
+    return "OCR fiable";
+  }
+
+  return databaseUnavailable ? "OCR seulement" : "Détection visuelle";
+}
+
+function dedupeDisplayWines(rows: DisplayScanWine[]) {
+  const seen = new Map<string, DisplayScanWine>();
+
+  for (const row of rows) {
+    const key = [
+      row.displayName.toLowerCase(),
+      row.vintage ?? "",
+      row.price ?? "",
+    ].join("|");
+
+    const existing = seen.get(key);
+
+    if (!existing) {
+      seen.set(key, row);
+      continue;
+    }
+
+    const existingScore =
+      (existing.country ? 1 : 0) +
+      (existing.region ? 1 : 0) +
+      (existing.price ? 1 : 0) +
+      (existing.vintage ? 1 : 0) +
+      (existing.image ? 1 : 0);
+
+    const rowScore =
+      (row.country ? 1 : 0) +
+      (row.region ? 1 : 0) +
+      (row.price ? 1 : 0) +
+      (row.vintage ? 1 : 0) +
+      (row.image ? 1 : 0);
+
+    if (rowScore > existingScore) {
+      seen.set(key, row);
+    }
+  }
+
+  return Array.from(seen.values());
+}
+
+function buildDisplayScanWines(
+  rawRows: DetectedWine[] | undefined,
+  databaseUnavailable: boolean
+): DisplayScanWine[] {
+  const rows = Array.isArray(rawRows) ? rawRows : [];
+
+  const cleaned = rows
+    .filter(looksLikeUsefulWine)
+    .map((row, index) => {
+      const displayName = cleanWineName(row.name || row.rawText);
+      const producer =
+        row.producer && normalizeWhitespace(stripWeirdPunctuation(String(row.producer)))
+          ? toTitleCaseSmart(
+              normalizeWhitespace(stripWeirdPunctuation(String(row.producer)))
+            )
+          : null;
+
+      const dbMatch = row.dbMatch as
+        | {
+            image?: string | null;
+            saqUrl?: string | null;
+            appellation?: string | null;
+            formatMl?: number | string | null;
+            grapes?: string[] | string | null;
+          }
+        | null
+        | undefined;
+
+      return {
+        id: row.id ?? `${displayName}-${index}`,
+        rawName: row.name || row.rawText || "",
+        displayName,
+        producer: producer || null,
+        country: row.country ? normalizeWhitespace(String(row.country)) : null,
+        region: row.region ? normalizeWhitespace(String(row.region)) : null,
+        appellation: dbMatch?.appellation
+          ? normalizeWhitespace(String(dbMatch.appellation))
+          : null,
+        vintage: normalizeVintage(row.vintage),
+        price: normalizePrice(row.price, row.priceText),
+        format: normalizeFormat(dbMatch?.formatMl),
+        grapes: normalizeGrapes(row.grape, row.aromas),
+        color: row.color ?? null,
+        confidenceLabel: confidenceLabel(row, databaseUnavailable),
+        isMatched: !!row.dbMatch,
+        image: dbMatch?.image ?? null,
+        saqUrl: dbMatch?.saqUrl ?? null,
+        sourceWine: row,
+      };
+    })
+    .filter((row) => row.displayName.length >= 3);
+
+  return dedupeDisplayWines(cleaned);
+}
 
 function mapTesseractLines(result: any): OcrLinePayload[] {
   const lines = Array.isArray(result?.data?.lines) ? result.data.lines : [];
@@ -207,6 +552,8 @@ export default function ScanPage() {
   const [loadingOcr, setLoadingOcr] = useState(false);
   const [loadingExtraction, setLoadingExtraction] = useState(false);
   const [error, setError] = useState("");
+  const [infoMessage, setInfoMessage] = useState("");
+  const [databaseUnavailable, setDatabaseUnavailable] = useState(false);
 
   const [rankedWines, setRankedWines] = useState<RankedWine[]>([]);
   const [premiumSelections, setPremiumSelections] =
@@ -215,6 +562,10 @@ export default function ScanPage() {
   const displayedWines = useMemo(() => {
     return rankedWines.length ? rankedWines.map((r) => r.wine) : detectedWines;
   }, [rankedWines, detectedWines]);
+
+  const displayScanResults = useMemo(() => {
+    return buildDisplayScanWines(displayedWines, databaseUnavailable);
+  }, [displayedWines, databaseUnavailable]);
 
   const bestRankedWine = useMemo(() => {
     return premiumSelections?.bestOverall || rankedWines[0] || null;
@@ -251,6 +602,8 @@ export default function ScanPage() {
     setRankedWines([]);
     setPremiumSelections(null);
     setError("");
+    setInfoMessage("");
+    setDatabaseUnavailable(false);
     setDraftPreferences(INITIAL_PREFERENCES);
     setAppliedPreferences(INITIAL_PREFERENCES);
     setHasPendingPreferenceChanges(false);
@@ -260,6 +613,8 @@ export default function ScanPage() {
     const file = event.target.files?.[0] || null;
 
     setError("");
+    setInfoMessage("");
+    setDatabaseUnavailable(false);
     setOcrText("");
     setOcrLines([]);
     setDetectedWines([]);
@@ -287,6 +642,9 @@ export default function ScanPage() {
       setDetectedWines([]);
       setRankedWines([]);
       setPremiumSelections(null);
+      setError("");
+      setInfoMessage("");
+      setDatabaseUnavailable(false);
 
       const res = await fetch("/api/scan/extract", {
         method: "POST",
@@ -306,9 +664,25 @@ export default function ScanPage() {
         throw new Error(data?.error || "Erreur extraction vins");
       }
 
-      setDetectedWines(Array.isArray(data.wines) ? data.wines : []);
-      setRankedWines(Array.isArray(data.rankedWines) ? data.rankedWines : []);
+      const wines = Array.isArray(data.wines) ? data.wines : [];
+      const ranked = Array.isArray(data.rankedWines) ? data.rankedWines : [];
+
+      setDetectedWines(wines);
+      setRankedWines(ranked);
       setPremiumSelections(data.premiumSelections || null);
+      setDatabaseUnavailable(Boolean(data.databaseUnavailable));
+
+      if (data.databaseUnavailable) {
+        setInfoMessage(
+          "Analyse réussie. La correspondance avec le répertoire est temporairement indisponible, donc les résultats affichés proviennent principalement de la lecture OCR."
+        );
+      } else if (wines.length > 0) {
+        setInfoMessage("Analyse terminée avec succès.");
+      } else {
+        setInfoMessage(
+          "Analyse terminée, mais aucun vin clair n’a pu être retenu à partir de cette image."
+        );
+      }
     } finally {
       setLoadingExtraction(false);
     }
@@ -317,6 +691,8 @@ export default function ScanPage() {
   async function handleAnalyze(forcedPreferences?: Preferences) {
     try {
       setError("");
+      setInfoMessage("");
+      setDatabaseUnavailable(false);
       setOcrText("");
       setOcrLines([]);
       setDetectedWines([]);
@@ -346,6 +722,7 @@ export default function ScanPage() {
           : "Une erreur est survenue pendant l’analyse.";
 
       setError(message);
+      setInfoMessage("");
       setLoadingOcr(false);
       setLoadingExtraction(false);
     }
@@ -492,6 +869,18 @@ export default function ScanPage() {
               {error && (
                 <div className="mt-5 rounded-[18px] border border-[rgba(180,74,54,0.18)] bg-[rgba(180,74,54,0.07)] px-4 py-3 text-sm text-[#8d3f33]">
                   {error}
+                </div>
+              )}
+
+              {infoMessage && !error && (
+                <div
+                  className={`mt-5 rounded-[18px] px-4 py-3 text-sm ${
+                    databaseUnavailable
+                      ? "border border-[rgba(173,123,47,0.22)] bg-[rgba(173,123,47,0.08)] text-[#7b5a21]"
+                      : "border border-[rgba(49,104,72,0.16)] bg-[rgba(49,104,72,0.07)] text-[#345841]"
+                  }`}
+                >
+                  {infoMessage}
                 </div>
               )}
 
@@ -684,13 +1073,142 @@ export default function ScanPage() {
               </div>
 
               <div className="rounded-full border border-[#d7cfc2] bg-white px-4 py-2 text-xs text-[#554b43]">
-                {displayedWines.length} vins
+                {displayScanResults.length} vins
               </div>
             </div>
 
-            {displayedWines.length === 0 ? (
+            {databaseUnavailable && displayScanResults.length > 0 && (
+              <div className="mt-6 rounded-[20px] border border-[rgba(173,123,47,0.22)] bg-[rgba(173,123,47,0.08)] px-4 py-3 text-sm text-[#7b5a21]">
+                Le répertoire n’a pas pu être consulté pour enrichir les résultats.
+                La sélection affichée repose donc surtout sur l’OCR et l’analyse
+                locale.
+              </div>
+            )}
+
+            {displayScanResults.length === 0 ? (
               <div className="mt-6 rounded-[22px] border border-[#e2dbcf] bg-white p-5 text-sm text-[#514740]">
                 Aucun vin détecté pour l’instant.
+              </div>
+            ) : databaseUnavailable ? (
+              <div className="mt-6 rounded-[28px] border border-[#e4d7c3] bg-[#fbf7f1] p-4 md:p-6">
+                <div className="mb-4 flex flex-col gap-2">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-[#8a6a36]">
+                    Mode OCR autonome
+                  </p>
+                  <p className="max-w-3xl text-sm leading-7 text-[#5c544b]">
+                    Analyse réussie. La correspondance avec le répertoire est
+                    temporairement indisponible, donc les cartes ci-dessous sont
+                    basées uniquement sur la lecture visuelle de l’image.
+                  </p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  {displayScanResults.map((wine) => (
+                    <article
+                      key={wine.id}
+                      className="overflow-hidden rounded-[28px] border border-[#e2dbcf] bg-white/90 shadow-[0_12px_40px_rgba(0,0,0,0.05)] backdrop-blur"
+                    >
+                      <div className="flex h-full flex-col p-5">
+                        <div className="mb-4 flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[11px] uppercase tracking-[0.22em] text-[#8b7d6f]">
+                              {wine.confidenceLabel}
+                            </p>
+                            <h3 className="mt-2 font-serif text-xl leading-tight text-[#1f1b18]">
+                              {wine.displayName}
+                            </h3>
+                            {wine.producer ? (
+                              <p className="mt-1 text-sm text-[#5c544b]">
+                                {wine.producer}
+                              </p>
+                            ) : null}
+                          </div>
+
+                          <span className="rounded-full border border-[#e2dbcf] bg-[#f9f6f1] px-3 py-1 text-[11px] uppercase tracking-[0.16em] text-[#786c61]">
+                            {wine.color || "Vin"}
+                          </span>
+                        </div>
+
+                        <div className="space-y-2 text-sm text-[#5c544b]">
+                          {wine.vintage ? (
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-[#8a7d72]">Millésime</span>
+                              <span className="font-medium text-[#1f1b18]">
+                                {wine.vintage}
+                              </span>
+                            </div>
+                          ) : null}
+
+                          {wine.price ? (
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-[#8a7d72]">Prix détecté</span>
+                              <span className="font-medium text-[#1f1b18]">
+                                {wine.price}
+                              </span>
+                            </div>
+                          ) : null}
+
+                          {wine.format ? (
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-[#8a7d72]">Format</span>
+                              <span className="font-medium text-[#1f1b18]">
+                                {wine.format}
+                              </span>
+                            </div>
+                          ) : null}
+
+                          {wine.country ? (
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-[#8a7d72]">Pays</span>
+                              <span className="font-medium text-[#1f1b18]">
+                                {wine.country}
+                              </span>
+                            </div>
+                          ) : null}
+
+                          {wine.region ? (
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-[#8a7d72]">Région</span>
+                              <span className="font-medium text-right text-[#1f1b18]">
+                                {wine.region}
+                              </span>
+                            </div>
+                          ) : null}
+
+                          {wine.appellation ? (
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-[#8a7d72]">Appellation</span>
+                              <span className="font-medium text-right text-[#1f1b18]">
+                                {wine.appellation}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {wine.grapes.length > 0 ? (
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {wine.grapes.map((grape) => (
+                              <span
+                                key={grape}
+                                className="rounded-full bg-[#f3eee7] px-3 py-1 text-xs text-[#5c544b]"
+                              >
+                                {grape}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <div className="mt-5 border-t border-[#efe7dc] pt-4">
+                          <p className="text-xs leading-relaxed text-[#7a7165]">
+                            Cette fiche est générée à partir du scan OCR uniquement.
+                            Les données peuvent être légèrement approximatives tant
+                            que la base de données reste indisponible.
+                          </p>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="mt-6 space-y-3">
@@ -707,7 +1225,9 @@ export default function ScanPage() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0 flex-1">
                           <p className="font-medium text-[#1f1b18]">
-                            {wine.name || "Nom partiel à confirmer"}
+                            {cleanWineName(wine.name || wine.rawText) ||
+                              wine.name ||
+                              "Nom partiel à confirmer"}
                           </p>
 
                           <p className="mt-1 text-sm leading-7 text-[#4a4038]">
@@ -767,7 +1287,8 @@ export default function ScanPage() {
                       </p>
 
                       <h2 className="mt-4 font-serif text-4xl leading-[0.95] text-[#221c18] md:text-5xl">
-                        {bestRankedWine.wine.name}
+                        {cleanWineName(bestRankedWine.wine.name || bestRankedWine.wine.rawText) ||
+                          bestRankedWine.wine.name}
                       </h2>
 
                       <p className="mt-3 text-sm leading-7 text-[#5c544b]">
@@ -826,6 +1347,14 @@ export default function ScanPage() {
                       </div>
                     </div>
                   </div>
+
+                  {databaseUnavailable && (
+                    <div className="mt-6 rounded-[20px] border border-[rgba(173,123,47,0.22)] bg-[rgba(173,123,47,0.08)] p-5 text-sm leading-7 text-[#7b5a21]">
+                      La recommandation ci-dessous reste utile, mais elle est
+                      calculée sans enrichissement complet depuis la base de
+                      données.
+                    </div>
+                  )}
 
                   {premiumExplanation && (
                     <div className="mt-6 rounded-[26px] border border-[#e3dacd] bg-[#f8f3ec] p-5 md:p-6">
@@ -1075,7 +1604,9 @@ function SelectionMiniCard({
       <p className="text-xs uppercase tracking-[0.2em] text-[#5f6d55]">
         {label}
       </p>
-      <p className="mt-2 font-medium text-[#1f1b18]">{wine.name}</p>
+      <p className="mt-2 font-medium text-[#1f1b18]">
+        {cleanWineName(wine.name || wine.rawText) || wine.name}
+      </p>
       <p className="mt-1 text-sm leading-7 text-[#494039]">
         {formatWineMeta(wine) || "Profil en cours de confirmation"}
       </p>

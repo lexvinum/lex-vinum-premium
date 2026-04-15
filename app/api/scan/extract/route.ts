@@ -4,6 +4,9 @@ import { findBestDbMatch } from "@/lib/ocr-db-matcher";
 import { buildWineCandidatesFromOcrLayout } from "@/lib/ocr-layout-parser";
 import { extractWinesFromOcr } from "@/lib/ocr-extract-wines";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 type OcrWordPayload = {
   text: string;
   confidence?: number;
@@ -1105,12 +1108,13 @@ function buildPremiumExplanation(
   }
 
   const summaryParts: string[] = [];
-  const styleTags = wine.styleTags || [];
 
   if (wine.color) summaryParts.push(wine.color);
   if (wine.region) summaryParts.push(wine.region);
   if (wine.grape) summaryParts.push(wine.grape);
-  if (styleTags.length) summaryParts.push(styleTags.slice(0, 2).join(", "));
+  if ((wine.styleTags || []).length) {
+    summaryParts.push((wine.styleTags || []).slice(0, 2).join(", "));
+  }
 
   const summary = summaryParts.length
     ? `${summaryParts.join(" • ")}. Très bonne cohérence globale avec votre recherche.`
@@ -1194,9 +1198,280 @@ function fallbackLinesFromText(text: string): OcrLinePayload[] {
     }));
 }
 
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function stripWeirdPunctuation(value: string) {
+  return value
+    .replace(/[«»“”"]/g, "")
+    .replace(/[|_/\\]+/g, " ")
+    .replace(/[•·▪◦●]/g, " ")
+    .replace(/\(\s*\)/g, " ")
+    .replace(/\[\s*\]/g, " ")
+    .replace(/\s*[-–—]\s*/g, " ")
+    .replace(/[^\p{L}\p{N}\s'.,\-&]/gu, " ");
+}
+
+function cleanCandidateName(raw?: string | null) {
+  if (!raw) return "";
+
+  return normalizeWhitespace(stripWeirdPunctuation(raw))
+    .replace(/\b([A-Za-zÀ-ÿ]{2,})\s+\1\b/giu, "$1")
+    .trim();
+}
+
+function getMeaningfulTokens(value: string) {
+  const stopwords = new Set([
+    "vin",
+    "vino",
+    "wine",
+    "rouge",
+    "blanc",
+    "rose",
+    "rosé",
+    "bio",
+    "reserve",
+    "réserve",
+    "grand",
+    "estate",
+    "domaine",
+    "cuvée",
+    "cuvee",
+    "the",
+    "and",
+    "les",
+    "des",
+    "de",
+    "du",
+    "la",
+    "le",
+    "del",
+    "della",
+    "delle",
+    "tenuta",
+    "bodega",
+    "bodegas",
+    "cellars",
+    "cellar",
+    "saint",
+    "santa",
+    "doc",
+    "docg",
+    "aoc",
+    "igt",
+  ]);
+
+  return value
+    .toLowerCase()
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((t) => t.length >= 3)
+    .filter((t) => !stopwords.has(t))
+    .filter((t) => !/^\d+$/.test(t));
+}
+
+function buildDbCandidateNames(detectedWines: Array<{ name?: string; rawText?: string }>) {
+  const seen = new Set<string>();
+
+  return detectedWines
+    .map((wine) => cleanCandidateName(wine.name || wine.rawText || ""))
+    .filter((name) => name.length >= 4)
+    .filter((name) => {
+      const lowered = name.toLowerCase();
+      if (seen.has(lowered)) return false;
+      seen.add(lowered);
+      return true;
+    })
+    .slice(0, 8);
+}
+
+async function fetchDbCandidates(wines: DetectedWine[]) {
+  const candidateNames = buildDbCandidateNames(wines);
+
+  const select = {
+    id: true,
+    name: true,
+    producer: true,
+    vintage: true,
+    price: true,
+    color: true,
+    country: true,
+    region: true,
+    grape: true,
+    description: true,
+    aromasJson: true,
+    tagsJson: true,
+  } as const;
+
+  if (!candidateNames.length) {
+    return {
+      candidateNames,
+      dbWines: [] as any[],
+    };
+  }
+
+  const collected: any[] = [];
+  const seenIds = new Set<string>();
+
+  for (const candidateName of candidateNames) {
+    const tokens = getMeaningfulTokens(candidateName).slice(0, 2);
+
+    if (!tokens.length) continue;
+
+    const orConditions = tokens.flatMap((token) => [
+      { name: { contains: token, mode: "insensitive" as const } },
+      { producer: { contains: token, mode: "insensitive" as const } },
+      { region: { contains: token, mode: "insensitive" as const } },
+      { grape: { contains: token, mode: "insensitive" as const } },
+      { country: { contains: token, mode: "insensitive" as const } },
+    ]);
+
+    const rows = await prisma.wine.findMany({
+      where: {
+        OR: orConditions,
+      },
+      select,
+      take: 12,
+    });
+
+    for (const row of rows) {
+      if (!row?.id || seenIds.has(row.id)) continue;
+      seenIds.add(row.id);
+      collected.push(row);
+    }
+
+    if (collected.length >= 60) break;
+  }
+
+  return {
+    candidateNames,
+    dbWines: collected.slice(0, 60),
+  };
+}
+
+function stripOcrNoise(value?: string | null) {
+  return cleanSpaces(
+    String(value || "")
+      .replace(/[®©™]/g, " ")
+      .replace(/[•·▪◦●]/g, " ")
+      .replace(/[|]/g, " ")
+      .replace(/\s*[,;:]\s*/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim()
+  );
+}
+
+function cleanWineText(value?: string | null) {
+  let text = stripOcrNoise(value);
+
+  text = text
+    .replace(/^[Tt]\s+(?=[a-zà-ÿ])/i, "")
+    .replace(/^[,.\-–—]+\s*/, "")
+    .replace(/^\d+\s+[®©™]?\s*/i, "")
+    .replace(/^[^\p{L}]+/u, "")
+    .replace(/[^\p{L}\p{N}\s'’"«»\-&/]/gu, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return text;
+}
+
+function cleanDisplayName(name?: string | null) {
+  let text = cleanWineText(name);
+
+  text = text
+    .replace(/\b(\d{1,3})\s*[$€£]\b/g, "")
+    .replace(/\b(19\d{2}|20\d{2})\b/g, "")
+    .replace(/\b(loire|rhone|rhône|france|italie|espagne|portugal|canada)\b/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return text;
+}
+
+function cleanProducerName(producer?: string | null) {
+  let text = cleanWineText(producer);
+
+  text = text
+    .replace(/\b(19\d{2}|20\d{2})\b/g, "")
+    .replace(/\b\d{1,3}\s*[$€£]\b/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return text;
+}
+
+function normalizeVintage(value?: string | null) {
+  if (!value) return undefined;
+
+  const match = String(value).match(/\b(19\d{2}|20\d{2})\b/);
+  if (!match) return undefined;
+
+  const year = Number(match[1]);
+  const currentYear = new Date().getFullYear();
+
+  if (year < 1950 || year > currentYear + 1) {
+    return undefined;
+  }
+
+  return String(year);
+}
+
+function isSuspiciousWineName(name?: string | null) {
+  const text = cleanDisplayName(name);
+
+  if (!text) return true;
+  if (text.length < 5) return true;
+
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return true;
+
+  const normalized = normalizeText(text);
+
+  if (/^(vin|wine|rouge|blanc|rose|rosé)$/.test(normalized)) return true;
+  if (/^\d+$/.test(normalized)) return true;
+
+  return false;
+}
+
+function sanitizeDetectedWine(wine: DetectedWine): DetectedWine {
+  const cleanedName = cleanDisplayName(wine.name);
+  const cleanedProducer = cleanProducerName(wine.producer);
+  const cleanedRawText = stripOcrNoise(wine.rawText);
+  const cleanedVintage = normalizeVintage(wine.vintage);
+
+  return {
+    ...wine,
+    rawText: cleanedRawText,
+    name: cleanedName,
+    producer: cleanedProducer || undefined,
+    vintage: cleanedVintage,
+  };
+}
+
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    route: "/api/scan/extract",
+    timestamp: new Date().toISOString(),
+  });
+}
+
 export async function POST(req: Request) {
+  const startedAt = Date.now();
+  const timings: Record<string, number> = {};
+  const mark = (label: string, from: number) => {
+    timings[label] = Date.now() - from;
+  };
+
   try {
+    console.log("[scan/extract] POST start");
+
+    const tBody = Date.now();
     const body = (await req.json()) as RequestPayload;
+    mark("readBodyMs", tBody);
 
     const extractedText = String(body?.extractedText || "");
     const preferences = body?.preferences || {};
@@ -1210,16 +1485,25 @@ export async function POST(req: Request) {
         {
           success: false,
           error: "Aucune donnée OCR reçue.",
+          debug: { timings },
         },
         { status: 400 }
       );
     }
 
+    console.log("[scan/extract] input", {
+      extractedTextLength: extractedText.length,
+      linesCount: inputLines.length,
+    });
+
+    const tParse = Date.now();
     const layoutCandidates = buildWineCandidatesFromOcrLayout({
       extractedText,
       lines: inputLines,
     });
+    mark("layoutParserMs", tParse);
 
+    const tFallback = Date.now();
     const fallbackCandidates =
       layoutCandidates.length >= 3
         ? []
@@ -1240,17 +1524,64 @@ export async function POST(req: Request) {
                 ? Math.max(0.2, Math.min(0.99, wine.confidence / 100))
                 : 0.6,
           }));
+    mark("fallbackParserMs", tFallback);
 
+    const tPrepare = Date.now();
     let wines = [...layoutCandidates, ...fallbackCandidates]
       .map((candidate) => enrichWineCandidate(candidate))
-      .filter((wine) => wine.name.length >= 5)
-      .filter((wine) => wine.name.split(/\s+/).length >= 2);
+      .map((wine) => sanitizeDetectedWine(wine))
+      .filter((wine) => !isSuspiciousWineName(wine.name));
 
     wines = dedupeWines(wines).slice(0, 80);
+    mark("prepareCandidatesMs", tPrepare);
 
-    const dbWines = await prisma.wine.findMany();
+    console.log("[scan/extract] candidates", {
+      layoutCandidates: layoutCandidates.length,
+      fallbackCandidates: fallbackCandidates.length,
+      finalCandidates: wines.length,
+    });
 
+    const tDb = Date.now();
+
+    let candidateNames: string[] = [];
+    let dbWines: any[] = [];
+    let databaseUnavailable = false;
+    let databaseErrorMessage: string | null = null;
+
+    try {
+      const result = await fetchDbCandidates(wines);
+      candidateNames = result.candidateNames;
+      dbWines = result.dbWines;
+    } catch (error) {
+      console.error("[scan/extract] DB ERROR (fallback mode)", error);
+      databaseUnavailable = true;
+      databaseErrorMessage =
+        error instanceof Error ? error.message : "Database unavailable";
+    }
+
+    mark("dbFetchMs", tDb);
+
+    console.log("[scan/extract] db pool", {
+      candidateNamesCount: candidateNames.length,
+      dbCandidates: dbWines.length,
+      databaseUnavailable,
+      candidateNamesPreview: candidateNames.slice(0, 8),
+    });
+
+    const tMatch = Date.now();
     const matchedWines: DetectedWine[] = wines.map((wine) => {
+      if (databaseUnavailable || !dbWines.length) {
+        return sanitizeDetectedWine({
+          ...wine,
+          dbMatch: null,
+          dbMatchConfidence: 0,
+          dbMatchReason: databaseUnavailable
+            ? "database_unavailable"
+            : "no_db_candidates",
+          matchedBy: "none",
+        });
+      }
+
       const match = findBestDbMatch(
         {
           name: wine.name,
@@ -1266,20 +1597,20 @@ export async function POST(req: Request) {
       );
 
       if (!match.wine) {
-        return {
+        return sanitizeDetectedWine({
           ...wine,
           dbMatch: null,
           dbMatchConfidence: match.confidence,
           dbMatchReason: match.reason,
           matchedBy: "none",
-        };
+        });
       }
 
       const dbWine = match.wine;
       const matchedAromas = parseJsonArrayField(dbWine.aromasJson);
       const matchedTags = parseJsonArrayField(dbWine.tagsJson);
 
-      return {
+      return sanitizeDetectedWine({
         ...wine,
         name: dbWine.name ?? wine.name,
         producer: dbWine.producer ?? wine.producer,
@@ -1287,8 +1618,8 @@ export async function POST(req: Request) {
           dbWine.vintage !== null && dbWine.vintage !== undefined
             ? String(dbWine.vintage)
             : wine.vintage
-            ? String(wine.vintage)
-            : undefined,
+              ? String(wine.vintage)
+              : undefined,
         price: dbWine.price ?? wine.price,
         color: dbWine.color ?? wine.color,
         country: dbWine.country ?? wine.country,
@@ -1302,15 +1633,27 @@ export async function POST(req: Request) {
         dbMatchConfidence: match.confidence,
         dbMatchReason: match.reason,
         matchedBy: "ocr_fuzzy",
-      };
+      });
     });
+    mark("dbMatchMs", tMatch);
 
+    const tRank = Date.now();
     const rankedWines = rankWines(matchedWines, preferences);
     const premiumSelections = pickPremiumSelections(rankedWines);
     const premiumSelectionsWithExplanation = attachPremiumExplanations(
       premiumSelections,
       preferences
     );
+    mark("rankingMs", tRank);
+
+    timings.totalMs = Date.now() - startedAt;
+
+    console.log("[scan/extract] success", {
+      matchedWines: matchedWines.length,
+      rankedWines: rankedWines.length,
+      databaseUnavailable,
+      timings,
+    });
 
     return NextResponse.json({
       success: true,
@@ -1319,14 +1662,30 @@ export async function POST(req: Request) {
       wines: matchedWines,
       rankedWines,
       premiumSelections: premiumSelectionsWithExplanation,
+      databaseUnavailable,
+      debug: {
+        timings,
+        counts: {
+          layoutCandidates: layoutCandidates.length,
+          fallbackCandidates: fallbackCandidates.length,
+          finalCandidates: wines.length,
+          dbCandidates: dbWines.length,
+        },
+        dbCandidateNames: candidateNames,
+        databaseErrorMessage,
+      },
     });
   } catch (error) {
-    console.error("SCAN EXTRACT ERROR", error);
+    console.error("[scan/extract] ERROR", error);
 
     return NextResponse.json(
       {
         success: false,
         error: "Erreur lors de l’extraction des vins.",
+        debug: {
+          timings,
+          totalMs: Date.now() - startedAt,
+        },
       },
       { status: 500 }
     );

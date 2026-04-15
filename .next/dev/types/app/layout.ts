@@ -1,4 +1,4 @@
-// File: /Users/laurieannebiron/Desktop/Personnel/Loisirs/Business/Lex Vinum/SITE INTERNET/lex-vinum-premium/app/layout.tsx
+// File: /Users/laurieannebiron/Projects/lex-vinum-premium-clean/app/layout.tsx
 import * as entry from '../../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

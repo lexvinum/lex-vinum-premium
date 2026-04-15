@@ -1,4 +1,5 @@
 {
-  "/repertoire/page": "app/repertoire/page.js",
-  "/scan/page": "app/scan/page.js"
+  "/api/map/points/route": "app/api/map/points/route.js",
+  "/page": "app/page.js",
+  "/carte/page": "app/carte/page.js"
 }
