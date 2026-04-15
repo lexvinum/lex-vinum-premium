@@ -513,7 +513,7 @@ export default async function WineDetailPage({ params }: PageProps) {
   });
 
   const relatedWines = relatedRaw
-    .filter((item) => isStrictWineCandidate(item))
+    .filter((item: any) => isStrictWineCandidate(item))
     .slice(0, 4);
 
   const aromas = parseArrayField(wine.aromasJson);
