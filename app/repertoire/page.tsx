@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import FavoriteButton from "@/components/favorites/FavoriteButton";
 
@@ -64,7 +63,26 @@ type RepertoireSearchParams = Promise<{
   page?: string;
 }>;
 
-function buildBaseWhere(): Prisma.WineWhereInput {
+type WineCard = {
+  id: string;
+  slug: string;
+  name: string;
+  producer: string | null;
+  country: string | null;
+  region: string | null;
+  color: string | null;
+  vintage: string | number | null;
+  price: number | null;
+  image: string | null;
+  featured: boolean | null;
+  isQuebec: boolean | null;
+  saqUrl?: string | null;
+  grape?: string | null;
+  appellationOrigine?: string | null;
+  designationReglementee?: string | null;
+};
+
+function buildBaseWhere() {
   return {
     dataSource: "SAQ",
   };
@@ -90,31 +108,31 @@ export default async function RepertoirePage({
 
   const baseWhere = buildBaseWhere();
 
-  const searchFilter: Prisma.WineWhereInput | null = q
+  const searchFilter = q
     ? {
         OR: [
-          { name: { contains: q, mode: Prisma.QueryMode.insensitive } },
-          { producer: { contains: q, mode: Prisma.QueryMode.insensitive } },
-          { country: { contains: q, mode: Prisma.QueryMode.insensitive } },
-          { region: { contains: q, mode: Prisma.QueryMode.insensitive } },
-          { grape: { contains: q, mode: Prisma.QueryMode.insensitive } },
+          { name: { contains: q, mode: "insensitive" as const } },
+          { producer: { contains: q, mode: "insensitive" as const } },
+          { country: { contains: q, mode: "insensitive" as const } },
+          { region: { contains: q, mode: "insensitive" as const } },
+          { grape: { contains: q, mode: "insensitive" as const } },
           {
             appellationOrigine: {
               contains: q,
-              mode: Prisma.QueryMode.insensitive,
+              mode: "insensitive" as const,
             },
           },
           {
             designationReglementee: {
               contains: q,
-              mode: Prisma.QueryMode.insensitive,
+              mode: "insensitive" as const,
             },
           },
         ],
       }
     : null;
 
-  const where: Prisma.WineWhereInput = {
+  const where: any = {
     AND: [
       baseWhere,
       ...(searchFilter ? [searchFilter] : []),
@@ -134,7 +152,7 @@ export default async function RepertoirePage({
     ],
   };
 
-  const realImageWhere: Prisma.WineWhereInput = {
+  const realImageWhere: any = {
     AND: [
       {
         image: {
@@ -157,13 +175,13 @@ export default async function RepertoirePage({
 
   const [
     total,
-    wines,
+    winesRaw,
     countries,
     colors,
     regions,
     totalQuebec,
     totalWithImages,
-    featuredWithImages,
+    featuredWithImagesRaw,
   ] = await Promise.all([
     prisma.wine.count({ where }),
     prisma.wine.findMany({
@@ -251,6 +269,18 @@ export default async function RepertoirePage({
       },
     }),
   ]);
+
+  const wines: WineCard[] = winesRaw.map((wine: any) => ({
+    ...wine,
+    featured: wine.featured ?? false,
+    isQuebec: wine.isQuebec ?? false,
+  }));
+
+  const featuredWithImages: WineCard[] = featuredWithImagesRaw.map((wine: any) => ({
+    ...wine,
+    featured: wine.featured ?? false,
+    isQuebec: wine.isQuebec ?? false,
+  }));
 
   const heroWine = featuredWithImages[0] ?? null;
   const sideWines = featuredWithImages.slice(1);
@@ -433,7 +463,7 @@ export default async function RepertoirePage({
 
                 {sideWines.length > 0 ? (
                   <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-1">
-                    {sideWines.map((wine) => {
+                    {sideWines.map((wine: WineCard) => {
                       const imageSrc = getWineImageSrc(wine.image);
 
                       return (
@@ -519,7 +549,7 @@ export default async function RepertoirePage({
               className="rounded-2xl border border-[#d8cfbf] bg-white px-4 py-3 text-sm text-[#221c18] outline-none transition focus:border-[#6f8f7a]"
             >
               <option value="">Tous les pays</option>
-              {countries.map((item) =>
+              {countries.map((item: { country: string | null }) =>
                 item.country ? (
                   <option key={item.country} value={item.country}>
                     {item.country}
@@ -534,7 +564,7 @@ export default async function RepertoirePage({
               className="rounded-2xl border border-[#d8cfbf] bg-white px-4 py-3 text-sm text-[#221c18] outline-none transition focus:border-[#6f8f7a]"
             >
               <option value="">Toutes les couleurs</option>
-              {colors.map((item) =>
+              {colors.map((item: { color: string | null }) =>
                 item.color ? (
                   <option key={item.color} value={item.color}>
                     {item.color}
@@ -549,7 +579,7 @@ export default async function RepertoirePage({
               className="rounded-2xl border border-[#d8cfbf] bg-white px-4 py-3 text-sm text-[#221c18] outline-none transition focus:border-[#6f8f7a]"
             >
               <option value="">Toutes les régions</option>
-              {regions.map((item) =>
+              {regions.map((item: { region: string | null }) =>
                 item.region ? (
                   <option key={item.region} value={item.region}>
                     {item.region}
@@ -592,7 +622,7 @@ export default async function RepertoirePage({
       <section className="mx-auto max-w-7xl px-5 pb-16 md:px-10 lg:px-12">
         {wines.length > 0 ? (
           <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-            {wines.map((wine) => {
+            {wines.map((wine: WineCard) => {
               const imageSrc = getWineImageSrc(wine.image);
               const hasSaqImage = Boolean(imageSrc);
 
