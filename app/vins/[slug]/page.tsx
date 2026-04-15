@@ -870,7 +870,7 @@ export default async function WineDetailPage({ params }: PageProps) {
           </div>
 
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-            {relatedWines.map((item) => {
+            {relatedWines.map((item: any) => {
               const relatedImage = resolveWineImage({
                 image: item.image,
                 color: item.color,
