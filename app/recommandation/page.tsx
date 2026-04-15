@@ -66,7 +66,7 @@ export default async function RecommandationPage() {
     },
   });
 
-  const wines = rawWines.map((wine) => ({
+  const wines = rawWines.map((wine: any) => ({
     ...wine,
     featured: wine.featured ?? false,
     isQuebec: wine.isQuebec ?? false,
