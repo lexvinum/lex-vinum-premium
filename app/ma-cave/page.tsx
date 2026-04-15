@@ -1,6 +1,8 @@
 import { getAllWines, getCellarItems } from "@/lib/wines";
 import MaCaveClient from "./ma-cave-client";
 
+export const dynamic = "force-dynamic";
+
 function parseStringArray(value: unknown): string[] {
   if (!value) return [];
 
@@ -30,10 +32,7 @@ function parseStringArray(value: unknown): string[] {
 }
 
 export default async function MaCavePage() {
-  const [items, wines] = await Promise.all([
-    getCellarItems(),
-    getAllWines(),
-  ]);
+  const [items, wines] = await Promise.all([getCellarItems(), getAllWines()]);
 
   const normalizedItems = items.map((item: any) => ({
     ...item,
@@ -46,8 +45,14 @@ export default async function MaCavePage() {
 
   const normalizedWines = wines.map((wine: any) => ({
     ...wine,
-    aromas: "aromas" in wine ? parseStringArray(wine.aromas) : parseStringArray(wine.aromasJson),
-    tags: "tags" in wine ? parseStringArray(wine.tags) : parseStringArray(wine.tagsJson),
+    aromas:
+      "aromas" in wine
+        ? parseStringArray(wine.aromas)
+        : parseStringArray(wine.aromasJson),
+    tags:
+      "tags" in wine
+        ? parseStringArray(wine.tags)
+        : parseStringArray(wine.tagsJson),
   }));
 
   return (
