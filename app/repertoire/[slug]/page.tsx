@@ -36,7 +36,7 @@ export default async function WineDetailPage({ params }: PageProps) {
       <section className="mt-6 glass-card rounded-[32px] p-8">
         <h2 className="text-2xl font-semibold text-white">Vins similaires</h2>
         <div className="mt-4 grid gap-4 md:grid-cols-3">
-          {relatedWines.map((item) => (
+          {relatedWines.map((item: any) => (
             <Link key={item.id} href={`/vins/${item.slug}`} className="rounded-[22px] border border-[var(--border)] p-4">
               <p className="font-medium text-white">{item.name}</p>
               <p className="mt-2 text-sm text-[var(--text-soft)]">
