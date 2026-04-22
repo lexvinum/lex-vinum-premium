@@ -1,30 +1,44 @@
 import { NextResponse } from "next/server";
-import { createAdminToken, isValidAdminPassword } from "@/lib/admin-auth";
 
-export async function POST(req: Request) {
-  const body = await req.json();
-  const password = String(body?.password || "");
+const ADMIN_ACCESS_CODE = process.env.ADMIN_ACCESS_CODE;
+const COOKIE_NAME = process.env.ADMIN_COOKIE_NAME || "lexvinum_admin";
 
-  const ok = await isValidAdminPassword(password);
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const code = String(body?.code || "");
 
-  if (!ok) {
+    if (!ADMIN_ACCESS_CODE) {
+      return NextResponse.json(
+        { ok: false, error: "ADMIN_ACCESS_CODE manquant dans .env.local" },
+        { status: 500 }
+      );
+    }
+
+    if (code !== ADMIN_ACCESS_CODE) {
+      return NextResponse.json(
+        { ok: false, error: "Code invalide" },
+        { status: 401 }
+      );
+    }
+
+    const response = NextResponse.json({ ok: true });
+
+    response.cookies.set({
+      name: COOKIE_NAME,
+      value: "granted",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
+    });
+
+    return response;
+  } catch {
     return NextResponse.json(
-      { error: "Mot de passe invalide" },
-      { status: 401 }
+      { ok: false, error: "Requête invalide" },
+      { status: 400 }
     );
   }
-
-  const token = await createAdminToken();
-
-  const response = NextResponse.json({ success: true });
-
-  response.cookies.set("lv_admin", token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7,
-  });
-
-  return response;
 }

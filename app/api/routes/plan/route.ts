@@ -1,771 +1,399 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { computeOptimizedDrivingRoute } from "@/lib/google-routes";
 
-type Budget = "petit" | "moyen" | "premium";
-type Pace = "detente" | "equilibre" | "intensif";
 type MapMode = "quebec" | "world";
 
-type NewRouteRequest = {
-  start?: {
-    id?: string;
-    lat?: number;
-    lng?: number;
-    name?: string;
-  };
-  preferences?: {
-    days?: number;
-    budget?: Budget;
-    styles?: string[];
-    pace?: Pace;
-    regionMode?: MapMode;
-  };
-};
-
-type LegacyTripStyle = "luxe" | "nature" | "gastronomie" | "decouverte";
-
-type LegacyRouteRequest = {
-  region?: string;
-  days?: number;
-  startCity?: string;
-  maxStopsPerDay?: number;
-  tripStyle?: LegacyTripStyle;
-  lodgingRequired?: boolean;
-  restaurantPreferred?: boolean;
-  tastingRequired?: boolean;
-};
-
-type UnifiedRequest = {
-  start: {
-    id?: string;
-    lat: number | null;
-    lng: number | null;
-    name: string;
-  };
-  preferences: {
-    days: number;
-    budget: Budget;
-    styles: string[];
-    pace: Pace;
-    regionMode: MapMode;
-  };
-};
-
-type VineyardLite = {
+type MapPoint = {
   id: string;
-  slug: string;
+  slug: string | null;
+  type: "vineyard" | "wine";
   name: string;
+  subtitle: string | null;
+  country: string | null;
   region: string | null;
-  city: string | null;
   province: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  website: string | null;
+  city: string | null;
+  latitude: number;
+  longitude: number;
   image: string | null;
+  website: string | null;
   isQuebec: boolean;
   tastingOffered: boolean;
   lodgingOffered: boolean;
   restaurantOnSite: boolean;
-  description?: string | null;
 };
 
-type RankedVineyard = VineyardLite & {
-  distanceKm: number;
-  styleScore: number;
-  distanceScore: number;
-  budgetScore: number;
-  experienceScore: number;
-  finalScore: number;
-};
-
-type PlannedStop = {
+type VineyardRow = {
   id: string;
+  slug: string | null;
   name: string;
+  country: string | null;
+  region: string | null;
+  province: string | null;
+  city: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  image: string | null;
+  website: string | null;
+  isQuebec: boolean | null;
+  tastingOffered: boolean | null;
+  lodgingOffered: boolean | null;
+  restaurantOnSite: boolean | null;
+};
+
+type VineyardRowWithCoords = VineyardRow & {
   latitude: number;
   longitude: number;
-  type: "vineyard";
-  region?: string | null;
-  country?: string | null;
-  city?: string | null;
-  image?: string | null;
-  description?: string | null;
-  score?: number | null;
 };
 
-type PlannedRoute = {
-  title: string;
-  subtitle: string;
-  summary: string;
-  totalDistanceKm: number;
-  totalDurationMinutes: number;
-  estimatedBudgetLabel: Budget;
-  encodedPolyline?: string;
-  polyline?: string;
-  path?: Array<{ lat: number; lng: number }>;
-  stops: PlannedStop[];
+type WineRow = {
+  id: string;
+  slug: string | null;
+  name: string;
+  producer: string | null;
+  country: string | null;
+  region: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  image: string | null;
+  isQuebec: boolean | null;
+  dataSource?: string | null;
 };
 
-function clamp(value: number, min = 0, max = 100) {
-  return Math.max(min, Math.min(max, value));
+function getMode(searchParams: URLSearchParams): MapMode {
+  const mode = searchParams.get("mode");
+  return mode === "world" ? "world" : "quebec";
 }
 
-function round(value: number, decimals = 1) {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
+function hasRealImage(image: string | null | undefined): boolean {
+  if (!image) return false;
+
+  const value = image.trim().toLowerCase();
+
+  if (!value) return false;
+  if (value.includes("placeholder")) return false;
+  if (value.includes("logo")) return false;
+
+  return true;
 }
 
-function normalizeText(value: string | null | undefined) {
+function normalizeValue(value: string | null | undefined): string {
   return (value ?? "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
+    .replace(/['’]/g, " ")
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
-function normalizeBudget(value: unknown): Budget {
-  if (value === "petit" || value === "moyen" || value === "premium") {
-    return value;
-  }
-  return "moyen";
+function isNumericCoordinate(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
-function normalizePace(value: unknown): Pace {
-  if (value === "detente" || value === "equilibre" || value === "intensif") {
-    return value;
-  }
-  return "equilibre";
+function hasCoordinates(v: VineyardRow): v is VineyardRowWithCoords {
+  return isNumericCoordinate(v.latitude) && isNumericCoordinate(v.longitude);
 }
 
-function normalizeRegionMode(value: unknown): MapMode {
-  if (value === "quebec" || value === "world") {
-    return value;
-  }
-  return "quebec";
-}
+function isQuebecPlace(
+  country: string | null | undefined,
+  region: string | null | undefined,
+  province: string | null | undefined,
+  city: string | null | undefined
+): boolean {
+  const values = [
+    normalizeValue(country),
+    normalizeValue(region),
+    normalizeValue(province),
+    normalizeValue(city),
+  ];
 
-function mapLegacyTripStyleToBudget(style?: LegacyTripStyle): Budget {
-  if (style === "luxe") return "premium";
-  if (style === "gastronomie") return "premium";
-  return "moyen";
-}
-
-function mapLegacyTripStyleToStyles(style?: LegacyTripStyle): string[] {
-  switch (style) {
-    case "nature":
-      return ["Nature"];
-    case "gastronomie":
-      return ["Premium"];
-    case "luxe":
-      return ["Premium"];
-    case "decouverte":
-    default:
-      return [];
-  }
-}
-
-function mapLegacyRequest(body: LegacyRouteRequest): UnifiedRequest {
-  return {
-    start: {
-      lat: null,
-      lng: null,
-      name: body.startCity || "Montréal",
-    },
-    preferences: {
-      days: clamp(Math.round(body.days || 2), 1, 7),
-      budget: mapLegacyTripStyleToBudget(body.tripStyle),
-      styles: mapLegacyTripStyleToStyles(body.tripStyle),
-      pace: "equilibre",
-      regionMode: "quebec",
-    },
-  };
-}
-
-function mapNewRequest(body: NewRouteRequest): UnifiedRequest {
-  return {
-    start: {
-      id: body.start?.id,
-      lat:
-        typeof body.start?.lat === "number" && Number.isFinite(body.start.lat)
-          ? body.start.lat
-          : null,
-      lng:
-        typeof body.start?.lng === "number" && Number.isFinite(body.start.lng)
-          ? body.start.lng
-          : null,
-      name: body.start?.name || "Point de départ",
-    },
-    preferences: {
-      days: clamp(Math.round(body.preferences?.days || 2), 1, 7),
-      budget: normalizeBudget(body.preferences?.budget),
-      styles: Array.isArray(body.preferences?.styles)
-        ? body.preferences.styles.filter(
-            (s): s is string => typeof s === "string" && s.trim().length > 0
-          )
-        : [],
-      pace: normalizePace(body.preferences?.pace),
-      regionMode: normalizeRegionMode(body.preferences?.regionMode),
-    },
-  };
-}
-
-function isNewRequest(body: unknown): body is NewRouteRequest {
-  if (!body || typeof body !== "object") return false;
-  return "start" in body || "preferences" in body;
-}
-
-function haversineDistanceKm(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number
-) {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const earthRadiusKm = 6371;
-
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLng / 2) ** 2;
-
-  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function estimateComfortDistanceKm(days: number, pace: Pace) {
-  const dayBase =
-    pace === "detente" ? 120 : pace === "equilibre" ? 180 : 260;
-
-  return Math.max(dayBase, dayBase * days);
-}
-
-function computeDistanceScore(distanceKm: number, days: number, pace: Pace) {
-  const comfort = estimateComfortDistanceKm(days, pace);
-
-  if (distanceKm <= comfort * 0.35) return 100;
-  if (distanceKm <= comfort * 0.6) return 88;
-  if (distanceKm <= comfort) return 72;
-  if (distanceKm <= comfort * 1.2) return 50;
-  if (distanceKm <= comfort * 1.5) return 30;
-  return 12;
-}
-
-function computeBudgetScore(vineyard: VineyardLite, budget: Budget) {
-  let inferredLevel = 40;
-
-  if (vineyard.lodgingOffered) inferredLevel += 20;
-  if (vineyard.restaurantOnSite) inferredLevel += 18;
-  if (vineyard.tastingOffered) inferredLevel += 10;
-  if (vineyard.image) inferredLevel += 4;
-
-  if (budget === "petit") {
-    if (inferredLevel <= 48) return 100;
-    if (inferredLevel <= 62) return 78;
-    return 42;
-  }
-
-  if (budget === "moyen") {
-    if (inferredLevel >= 45 && inferredLevel <= 75) return 100;
-    if (inferredLevel <= 85) return 80;
-    return 58;
-  }
-
-  if (inferredLevel >= 75) return 100;
-  if (inferredLevel >= 60) return 80;
-  return 52;
-}
-
-function computeExperienceScore(vineyard: VineyardLite) {
-  let score = 45;
-
-  if (vineyard.image) score += 10;
-  if (vineyard.website) score += 8;
-  if (vineyard.description) score += 8;
-  if (vineyard.tastingOffered) score += 8;
-  if (vineyard.restaurantOnSite) score += 8;
-  if (vineyard.lodgingOffered) score += 10;
-
-  return clamp(score);
-}
-
-function computeStyleScore(vineyard: VineyardLite, selectedStyles: string[]) {
-  if (!selectedStyles.length) return 60;
-
-  const haystack = normalizeText(
-    [vineyard.name, vineyard.region, vineyard.city, vineyard.description]
-      .filter(Boolean)
-      .join(" ")
+  return values.some(
+    (value) =>
+      value === "quebec" ||
+      value.includes("quebec") ||
+      value === "monteregie" ||
+      value === "estrie" ||
+      value === "lanaudiere" ||
+      value === "laurentides" ||
+      value === "cantons de l est" ||
+      value === "eastern townships" ||
+      value === "ile d orleans"
   );
-
-  const normalizedStyles = selectedStyles.map(normalizeText);
-  let matches = 0;
-
-  for (const style of normalizedStyles) {
-    if (!style) continue;
-
-    if (style.includes("premium") || style.includes("luxe")) {
-      if (vineyard.lodgingOffered || vineyard.restaurantOnSite) {
-        matches += 1;
-        continue;
-      }
-    }
-
-    if (style.includes("nature") || style.includes("biodynam")) {
-      if (
-        haystack.includes("nature") ||
-        haystack.includes("bio") ||
-        haystack.includes("biodynam")
-      ) {
-        matches += 1;
-        continue;
-      }
-    }
-
-    if (
-      style.includes("bulles") ||
-      style.includes("mousseux") ||
-      style.includes("sparkling")
-    ) {
-      if (
-        haystack.includes("bull") ||
-        haystack.includes("mousseux") ||
-        haystack.includes("effervescent")
-      ) {
-        matches += 1;
-        continue;
-      }
-    }
-
-    if (
-      style.includes("orange") ||
-      style.includes("rose") ||
-      style.includes("blanc") ||
-      style.includes("rouge")
-    ) {
-      if (haystack.includes(style)) {
-        matches += 1;
-        continue;
-      }
-    }
-
-    if (haystack.includes(style)) {
-      matches += 1;
-    }
-  }
-
-  if (matches === 0) return 55;
-
-  return clamp(Math.round((matches / normalizedStyles.length) * 100));
 }
 
-function decodeGooglePolyline(
-  encoded: string
-): Array<{ lat: number; lng: number }> {
-  let index = 0;
-  let lat = 0;
-  let lng = 0;
-  const coordinates: Array<{ lat: number; lng: number }> = [];
+function isNonQuebecWine(
+  country: string | null | undefined,
+  region: string | null | undefined,
+  isQuebec: boolean | null | undefined
+): boolean {
+  if (Boolean(isQuebec)) return false;
+  return !isQuebecPlace(country, region, null, null);
+}
 
-  while (index < encoded.length) {
-    let shift = 0;
-    let result = 0;
-    let byte: number;
+function getRegionFallback(
+  country: string | null | undefined,
+  region: string | null | undefined
+): { lat: number; lng: number } {
+  const normalizedCountry = normalizeValue(country);
+  const normalizedRegion = normalizeValue(region);
 
-    do {
-      byte = encoded.charCodeAt(index++) - 63;
-      result |= (byte & 0x1f) << shift;
-      shift += 5;
-    } while (byte >= 0x20);
+  const regionMap: Record<string, { lat: number; lng: number }> = {
+    bordeaux: { lat: 44.8378, lng: -0.5792 },
+    bourgogne: { lat: 47.0525, lng: 4.3837 },
+    burgundy: { lat: 47.0525, lng: 4.3837 },
+    champagne: { lat: 49.0536, lng: 3.959 },
+    alsace: { lat: 48.3182, lng: 7.4416 },
+    loire: { lat: 47.3833, lng: 0.6833 },
+    "vallee du rhone": { lat: 44.0, lng: 4.8 },
+    rhone: { lat: 44.0, lng: 4.8 },
+    provence: { lat: 43.9352, lng: 6.0679 },
+    languedoc: { lat: 43.5912, lng: 3.2584 },
+    beaujolais: { lat: 46.1872, lng: 4.6396 },
 
-    const deltaLat = result & 1 ? ~(result >> 1) : result >> 1;
-    lat += deltaLat;
+    toscane: { lat: 43.7711, lng: 11.2486 },
+    toscana: { lat: 43.7711, lng: 11.2486 },
+    piemonte: { lat: 45.0703, lng: 7.6869 },
+    piedmont: { lat: 45.0703, lng: 7.6869 },
+    veneto: { lat: 45.4408, lng: 12.3155 },
+    sicile: { lat: 37.5999, lng: 14.0154 },
+    sicilia: { lat: 37.5999, lng: 14.0154 },
+    puglia: { lat: 41.1256, lng: 16.8667 },
 
-    shift = 0;
-    result = 0;
+    rioja: { lat: 42.4627, lng: -2.4449 },
+    "ribera del duero": { lat: 41.6406, lng: -3.6892 },
+    priorat: { lat: 41.15, lng: 0.85 },
+    penedes: { lat: 41.3462, lng: 1.6999 },
+    rueda: { lat: 41.4125, lng: -4.9608 },
 
-    do {
-      byte = encoded.charCodeAt(index++) - 63;
-      result |= (byte & 0x1f) << shift;
-      shift += 5;
-    } while (byte >= 0x20);
+    douro: { lat: 41.16, lng: -7.79 },
+    alentejo: { lat: 38.5667, lng: -7.9 },
+    dao: { lat: 40.7167, lng: -7.9167 },
 
-    const deltaLng = result & 1 ? ~(result >> 1) : result >> 1;
-    lng += deltaLng;
+    california: { lat: 36.7783, lng: -119.4179 },
+    "napa valley": { lat: 38.5025, lng: -122.2654 },
+    sonoma: { lat: 38.2919, lng: -122.458 },
+    oregon: { lat: 43.8041, lng: -120.5542 },
+    washington: { lat: 47.7511, lng: -120.7401 },
 
-    coordinates.push({
-      lat: lat / 1e5,
-      lng: lng / 1e5,
+    mendoza: { lat: -32.8895, lng: -68.8458 },
+    maipo: { lat: -33.65, lng: -70.75 },
+    colchagua: { lat: -34.6389, lng: -71.3592 },
+
+    barossa: { lat: -34.5333, lng: 138.95 },
+    "margaret river": { lat: -33.9536, lng: 115.0739 },
+    marlborough: { lat: -41.5134, lng: 173.9612 },
+    stellenbosch: { lat: -33.9321, lng: 18.8602 },
+  };
+
+  const countryMap: Record<string, { lat: number; lng: number }> = {
+    france: { lat: 46.2276, lng: 2.2137 },
+    italie: { lat: 41.8719, lng: 12.5674 },
+    italy: { lat: 41.8719, lng: 12.5674 },
+    espagne: { lat: 40.4637, lng: -3.7492 },
+    spain: { lat: 40.4637, lng: -3.7492 },
+    portugal: { lat: 39.3999, lng: -8.2245 },
+    "etats unis": { lat: 37.0902, lng: -95.7129 },
+    usa: { lat: 37.0902, lng: -95.7129 },
+    "united states": { lat: 37.0902, lng: -95.7129 },
+    argentine: { lat: -38.4161, lng: -63.6167 },
+    argentina: { lat: -38.4161, lng: -63.6167 },
+    chili: { lat: -35.6751, lng: -71.543 },
+    chile: { lat: -35.6751, lng: -71.543 },
+    australie: { lat: -25.2744, lng: 133.7751 },
+    australia: { lat: -25.2744, lng: 133.7751 },
+    "nouvelle zelande": { lat: -40.9006, lng: 174.886 },
+    "new zealand": { lat: -40.9006, lng: 174.886 },
+    "afrique du sud": { lat: -30.5595, lng: 22.9375 },
+    "south africa": { lat: -30.5595, lng: 22.9375 },
+    allemagne: { lat: 51.1657, lng: 10.4515 },
+    germany: { lat: 51.1657, lng: 10.4515 },
+    autriche: { lat: 47.5162, lng: 14.5501 },
+    austria: { lat: 47.5162, lng: 14.5501 },
+    canada: { lat: 56.1304, lng: -106.3468 },
+  };
+
+  if (normalizedRegion && regionMap[normalizedRegion]) {
+    return regionMap[normalizedRegion];
+  }
+
+  if (normalizedCountry && countryMap[normalizedCountry]) {
+    return countryMap[normalizedCountry];
+  }
+
+  return { lat: 20, lng: 0 };
+}
+
+function hasWorldOrigin(
+  country: string | null | undefined,
+  region: string | null | undefined,
+  latitude: number | null | undefined,
+  longitude: number | null | undefined
+): boolean {
+  if (isNumericCoordinate(latitude) && isNumericCoordinate(longitude)) {
+    return true;
+  }
+
+  const normalizedCountry = normalizeValue(country);
+  const normalizedRegion = normalizeValue(region);
+
+  return Boolean(normalizedCountry || normalizedRegion);
+}
+
+function sortPoints(points: MapPoint[]): MapPoint[] {
+  return [...points].sort((a, b) => {
+    const aImage = hasRealImage(a.image) ? 1 : 0;
+    const bImage = hasRealImage(b.image) ? 1 : 0;
+
+    if (bImage !== aImage) return bImage - aImage;
+
+    const regionCompare = (a.region ?? "").localeCompare(b.region ?? "", "fr", {
+      sensitivity: "base",
     });
-  }
 
-  return coordinates;
+    if (regionCompare !== 0) return regionCompare;
+
+    return a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
+  });
 }
 
-function extractPolyline(routeData: any): string | undefined {
-  return (
-    routeData?.polyline?.encodedPolyline ||
-    routeData?.overviewPolyline ||
-    routeData?.encodedPolyline ||
-    routeData?.polyline
-  );
-}
-
-function extractDistanceKm(routeData: any, fallbackStops: RankedVineyard[]) {
-  const meters =
-    routeData?.distanceMeters ??
-    routeData?.localizedValues?.distance?.meters ??
-    null;
-
-  if (typeof meters === "number" && Number.isFinite(meters)) {
-    return round(meters / 1000, 1);
-  }
-
-  let total = 0;
-  for (let i = 1; i < fallbackStops.length; i += 1) {
-    const prev = fallbackStops[i - 1];
-    const curr = fallbackStops[i];
-
-    total += haversineDistanceKm(
-      prev.latitude!,
-      prev.longitude!,
-      curr.latitude!,
-      curr.longitude!
-    );
-  }
-
-  return round(total, 1);
-}
-
-function extractDurationMinutes(routeData: any, stopCount: number) {
-  const durationValue =
-    routeData?.duration ||
-    routeData?.staticDuration ||
-    routeData?.localizedValues?.duration?.text ||
-    null;
-
-  if (typeof durationValue === "string") {
-    const match = durationValue.match(/(\d+(?:\.\d+)?)s$/);
-    if (match) {
-      return Math.round(Number(match[1]) / 60);
-    }
-  }
-
-  if (typeof routeData?.durationSeconds === "number") {
-    return Math.round(routeData.durationSeconds / 60);
-  }
-
-  return Math.max(40, stopCount * 45);
-}
-
-function buildFallbackPath(stops: RankedVineyard[]) {
-  return stops.map((stop) => ({
-    lat: stop.latitude!,
-    lng: stop.longitude!,
-  }));
-}
-
-function buildRouteTitle(day: number, totalDays: number, budget: Budget) {
-  const budgetLabel =
-    budget === "petit"
-      ? "accessible"
-      : budget === "premium"
-        ? "premium"
-        : "signature";
-
-  if (totalDays === 1) {
-    return `Escapade ${budgetLabel} Lex Vinum`;
-  }
-
-  return `Jour ${day} · Parcours ${budgetLabel}`;
-}
-
-function buildRouteSubtitle(stops: RankedVineyard[], days: number, pace: Pace) {
-  const regions = Array.from(
-    new Set(stops.map((stop) => stop.region).filter(Boolean))
-  ) as string[];
-
-  const paceLabel =
-    pace === "detente"
-      ? "rythme détente"
-      : pace === "intensif"
-        ? "rythme intensif"
-        : "rythme équilibré";
-
-  return `${days} jour${days > 1 ? "s" : ""} · ${paceLabel}${
-    regions.length ? ` · ${regions.join(" · ")}` : ""
-  }`;
-}
-
-function buildRouteSummary(stops: RankedVineyard[]) {
-  if (!stops.length) {
-    return "Parcours généré selon tes préférences.";
-  }
-
-  const top = stops[0];
-  const restaurantCount = stops.filter((s) => s.restaurantOnSite).length;
-  const tastingCount = stops.filter((s) => s.tastingOffered).length;
-  const lodgingCount = stops.filter((s) => s.lodgingOffered).length;
-
-  const pieces = [
-    `${stops.length} arrêt${stops.length > 1 ? "s" : ""} sélectionné${stops.length > 1 ? "s" : ""}`,
-    tastingCount > 0
-      ? `${tastingCount} dégustation${tastingCount > 1 ? "s" : ""}`
-      : null,
-    restaurantCount > 0
-      ? `${restaurantCount} option${restaurantCount > 1 ? "s" : ""} gastronomique${restaurantCount > 1 ? "s" : ""}`
-      : null,
-    lodgingCount > 0
-      ? `${lodgingCount} halte${lodgingCount > 1 ? "s" : ""} avec hébergement`
-      : null,
-  ].filter(Boolean);
-
-  return `Itinéraire optimisé autour de ${top.name}, avec ${pieces.join(", ")}.`;
-}
-
-function rankVineyard(
-  vineyard: VineyardLite,
-  request: UnifiedRequest
-): RankedVineyard | null {
-  if (vineyard.latitude == null || vineyard.longitude == null) return null;
-  if (request.start.lat == null || request.start.lng == null) return null;
-  if (request.start.id && vineyard.id === request.start.id) return null;
-
-  const distanceKm = haversineDistanceKm(
-    request.start.lat,
-    request.start.lng,
-    vineyard.latitude,
-    vineyard.longitude
-  );
-
-  const styleScore = computeStyleScore(vineyard, request.preferences.styles);
-  const distanceScore = computeDistanceScore(
-    distanceKm,
-    request.preferences.days,
-    request.preferences.pace
-  );
-  const budgetScore = computeBudgetScore(vineyard, request.preferences.budget);
-  const experienceScore = computeExperienceScore(vineyard);
-
-  const finalScore =
-    styleScore * 0.35 +
-    distanceScore * 0.25 +
-    budgetScore * 0.2 +
-    experienceScore * 0.2;
-
-  return {
-    ...vineyard,
-    distanceKm: round(distanceKm, 1),
-    styleScore,
-    distanceScore,
-    budgetScore,
-    experienceScore,
-    finalScore: round(finalScore, 1),
-  };
-}
-
-function getStopsPerDay(days: number, pace: Pace) {
-  if (days <= 1) {
-    if (pace === "detente") return 2;
-    if (pace === "intensif") return 4;
-    return 3;
-  }
-
-  if (pace === "detente") return 2;
-  if (pace === "intensif") return 4;
-  return 3;
-}
-
-function buildPlannedStops(stops: RankedVineyard[]): PlannedStop[] {
-  return stops.map((stop) => ({
-    id: stop.id,
-    name: stop.name,
-    latitude: stop.latitude!,
-    longitude: stop.longitude!,
-    type: "vineyard",
-    region: stop.region,
-    country: stop.isQuebec ? "Canada" : null,
-    city: stop.city,
-    image: stop.image,
-    description:
-      stop.description ||
-      `Score global ${stop.finalScore}/100 · style ${stop.styleScore}/100 · distance ${stop.distanceScore}/100 · budget ${stop.budgetScore}/100.`,
-    score: stop.finalScore,
-  }));
-}
-
-export async function POST(req: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const body = await req.json();
+    const mode = getMode(request.nextUrl.searchParams);
 
-    const request: UnifiedRequest = isNewRequest(body)
-      ? mapNewRequest(body as NewRouteRequest)
-      : mapLegacyRequest(body as LegacyRouteRequest);
-
-    if (request.start.lat == null || request.start.lng == null) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Le point de départ est requis pour planifier l’itinéraire.",
+    if (mode === "quebec") {
+      const vineyards = await prisma.vineyard.findMany({
+        where: {
+          latitude: { not: null },
+          longitude: { not: null },
+          isQuebec: true,
         },
-        { status: 400 }
-      );
+        orderBy: [{ name: "asc" }],
+        take: 2000,
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          country: true,
+          region: true,
+          province: true,
+          city: true,
+          latitude: true,
+          longitude: true,
+          image: true,
+          website: true,
+          isQuebec: true,
+          tastingOffered: true,
+          lodgingOffered: true,
+          restaurantOnSite: true,
+        },
+      });
+
+      const points: MapPoint[] = (vineyards as VineyardRow[])
+        .filter(hasCoordinates)
+        .map((v) => ({
+          id: v.id,
+          slug: v.slug ?? null,
+          type: "vineyard",
+          name: v.name,
+          subtitle: null,
+          country: v.country ?? null,
+          region: v.region ?? null,
+          province: v.province ?? null,
+          city: v.city ?? null,
+          latitude: v.latitude,
+          longitude: v.longitude,
+          image: v.image ?? null,
+          website: v.website ?? null,
+          isQuebec: true,
+          tastingOffered: Boolean(v.tastingOffered),
+          lodgingOffered: Boolean(v.lodgingOffered),
+          restaurantOnSite: Boolean(v.restaurantOnSite),
+        }));
+
+      const sorted = sortPoints(points);
+
+      return NextResponse.json({
+        ok: true,
+        mode,
+        count: sorted.length,
+        vineyardsCount: sorted.length,
+        winesCount: 0,
+        points: sorted,
+      });
     }
 
-    const days = request.preferences.days;
-    const stopsPerDay = getStopsPerDay(days, request.preferences.pace);
-    const totalStopsWanted = Math.max(2, days * stopsPerDay);
-
-    const vineyards = await prisma.vineyard.findMany({
+    const wines = await prisma.wine.findMany({
       where: {
-        latitude: { not: null },
-        longitude: { not: null },
-        ...(request.preferences.regionMode === "quebec"
-          ? { isQuebec: true }
-          : {}),
+        OR: [{ dataSource: "SAQ" }, { saqUrl: { not: null } }],
       },
+      orderBy: [{ name: "asc" }],
+      take: 10000,
       select: {
         id: true,
         slug: true,
         name: true,
+        producer: true,
+        country: true,
         region: true,
-        city: true,
-        province: true,
         latitude: true,
         longitude: true,
-        website: true,
         image: true,
         isQuebec: true,
-        tastingOffered: true,
-        lodgingOffered: true,
-        restaurantOnSite: true,
-        description: true,
+        dataSource: true,
       },
-      orderBy: [{ name: "asc" }],
     });
 
-    const ranked = vineyards
-      .map((vineyard: VineyardLite) => rankVineyard(vineyard, request))
-      .filter((item: RankedVineyard | null): item is RankedVineyard => Boolean(item))
-      .sort((a: RankedVineyard, b: RankedVineyard) => b.finalScore - a.finalScore)
-      .slice(0, totalStopsWanted);
+    const points: MapPoint[] = (wines as WineRow[])
+      .filter((w) => isNonQuebecWine(w.country, w.region, w.isQuebec))
+      .filter((w) =>
+        hasWorldOrigin(w.country, w.region, w.latitude, w.longitude)
+      )
+      .map((w) => {
+        const coords =
+          isNumericCoordinate(w.latitude) && isNumericCoordinate(w.longitude)
+            ? { lat: w.latitude, lng: w.longitude }
+            : getRegionFallback(w.country, w.region);
 
-    if (!ranked.length) {
-      return NextResponse.json({
-        success: true,
-        routes: [],
-        summary: {
-          vineyardCountConsidered: vineyards.length,
-          selectedStops: 0,
-        },
+        return {
+          id: w.id,
+          slug: w.slug ?? null,
+          type: "wine",
+          name: w.name,
+          subtitle: w.producer ?? null,
+          country: w.country ?? null,
+          region: w.region ?? null,
+          province: null,
+          city: null,
+          latitude: coords.lat,
+          longitude: coords.lng,
+          image: w.image ?? null,
+          website: null,
+          isQuebec: false,
+          tastingOffered: false,
+          lodgingOffered: false,
+          restaurantOnSite: false,
+        };
       });
-    }
 
-    const routes: PlannedRoute[] = [];
-
-    for (let dayIndex = 0; dayIndex < days; dayIndex += 1) {
-      const startIndex = dayIndex * stopsPerDay;
-      const endIndex = startIndex + stopsPerDay;
-      const dayStops = ranked.slice(startIndex, endIndex);
-
-      if (!dayStops.length) continue;
-
-      const originPoint =
-        dayIndex === 0
-          ? {
-              label: request.start.name,
-              latitude: request.start.lat!,
-              longitude: request.start.lng!,
-            }
-          : {
-              label: dayStops[0].city || dayStops[0].name,
-              latitude: dayStops[0].latitude!,
-              longitude: dayStops[0].longitude!,
-            };
-
-      const destinationPoint = {
-        label:
-          dayStops[dayStops.length - 1].city ||
-          dayStops[dayStops.length - 1].name,
-        latitude: dayStops[dayStops.length - 1].latitude!,
-        longitude: dayStops[dayStops.length - 1].longitude!,
-      };
-
-      const intermediates = dayStops.slice(0, -1).map((stop: RankedVineyard) => ({
-        label: stop.name,
-        latitude: stop.latitude!,
-        longitude: stop.longitude!,
-      }));
-
-      let routeData: any = null;
-
-      try {
-        routeData = await computeOptimizedDrivingRoute({
-          origin: originPoint,
-          destination: destinationPoint,
-          intermediates,
-        });
-      } catch (error) {
-        console.error(`ROUTES API DAY ${dayIndex + 1} ERROR`, error);
-      }
-
-      const googleRoute = routeData?.routes?.[0] ?? routeData ?? null;
-      const encodedPolyline = extractPolyline(googleRoute);
-      const decodedPath = encodedPolyline
-        ? decodeGooglePolyline(encodedPolyline)
-        : buildFallbackPath(dayStops);
-
-      routes.push({
-        title: buildRouteTitle(dayIndex + 1, days, request.preferences.budget),
-        subtitle: buildRouteSubtitle(
-          dayStops,
-          request.preferences.days,
-          request.preferences.pace
-        ),
-        summary: buildRouteSummary(dayStops),
-        totalDistanceKm: extractDistanceKm(googleRoute, dayStops),
-        totalDurationMinutes: extractDurationMinutes(
-          googleRoute,
-          dayStops.length
-        ),
-        estimatedBudgetLabel: request.preferences.budget,
-        encodedPolyline,
-        polyline: encodedPolyline,
-        path: decodedPath,
-        stops: buildPlannedStops(dayStops),
-      });
-    }
-
-    const bestRoute = routes[0] ?? null;
+    const sorted = sortPoints(points);
 
     return NextResponse.json({
-      success: true,
-      route: bestRoute,
-      routes,
-      input: request,
-      summary: {
-        vineyardCountConsidered: vineyards.length,
-        selectedStops: ranked.length,
-      },
-      debug: ranked.map((item: RankedVineyard) => ({
-        id: item.id,
-        name: item.name,
-        distanceKm: item.distanceKm,
-        styleScore: item.styleScore,
-        distanceScore: item.distanceScore,
-        budgetScore: item.budgetScore,
-        experienceScore: item.experienceScore,
-        finalScore: item.finalScore,
-      })),
+      ok: true,
+      mode,
+      count: sorted.length,
+      vineyardsCount: 0,
+      winesCount: sorted.length,
+      points: sorted,
     });
   } catch (error) {
-    console.error("ROUTE PLAN ERROR", error);
+    console.error("GET /api/map/points failed:", error);
 
     return NextResponse.json(
       {
-        success: false,
-        error: "Impossible de générer l’itinéraire intelligent.",
+        ok: false,
+        error: "Impossible de charger les points de la carte.",
       },
       { status: 500 }
     );

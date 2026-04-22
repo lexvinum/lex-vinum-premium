@@ -84,7 +84,7 @@ declare global {
 
 const MAP_ID = "lex-vinum-premium-map";
 const DEFAULT_CENTER_QUEBEC = { lat: 45.3151, lng: -72.9046 };
-const DEFAULT_CENTER_WORLD = { lat: 46.8139, lng: -71.208 };
+const DEFAULT_CENTER_WORLD = { lat: 20, lng: 0 };
 const STYLE_OPTIONS = [
   "Rouge",
   "Blanc",
@@ -94,6 +94,19 @@ const STYLE_OPTIONS = [
   "Orange",
   "Biodynamie",
   "Premium",
+];
+
+const WORLD_COUNTRIES = [
+  "France",
+  "Italie",
+  "Espagne",
+  "Portugal",
+  "États-Unis",
+  "Argentine",
+  "Chili",
+  "Australie",
+  "Nouvelle-Zélande",
+  "Afrique du Sud",
 ];
 
 function cx(...classes: Array<string | false | null | undefined>) {
@@ -116,12 +129,50 @@ function formatDistance(distanceKm?: number) {
   return `${Math.round(distanceKm)} km`;
 }
 
+function normalizeValue(value: string | null | undefined): string {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’]/g, " ")
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function isQuebecLikePoint(point: MapPoint): boolean {
+  const values = [
+    normalizeValue(point.country),
+    normalizeValue(point.region),
+    normalizeValue(point.city),
+  ];
+
+  if (point.isQuebec === true) return true;
+
+  return values.some(
+    (value) =>
+      value === "quebec" ||
+      value.includes("quebec") ||
+      value === "monteregie" ||
+      value === "estrie" ||
+      value === "lanaudiere" ||
+      value === "laurentides" ||
+      value === "cantons de l est" ||
+      value === "eastern townships" ||
+      value === "ile d orleans"
+  );
+}
+
 function markerGlyph(point: MapPoint) {
   if (point.type === "vineyard") return "V";
   return point.isQuebec ? "Q" : "M";
 }
 
-function resolvePointImage(point?: { image?: string | null; type?: PointType; isQuebec?: boolean }) {
+function resolvePointImage(point?: {
+  image?: string | null;
+  type?: PointType;
+  isQuebec?: boolean;
+}) {
   if (point?.image && point.image.trim().length > 0) {
     return point.image;
   }
@@ -146,6 +197,7 @@ export default function CartePage() {
 
   const [mapsReady, setMapsReady] = useState(false);
   const [mapMode, setMapMode] = useState<MapMode>("quebec");
+  const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
   const [points, setPoints] = useState<MapPoint[]>([]);
   const [loadingPoints, setLoadingPoints] = useState(false);
   const [pointsError, setPointsError] = useState<string | null>(null);
@@ -167,10 +219,11 @@ export default function CartePage() {
 
   const visiblePoints = useMemo(() => {
     if (mapMode === "quebec") {
-      return points.filter((point) => point.isQuebec || point.country === "Canada");
+      return points.filter((point) => point.type === "vineyard");
     }
-    return points;
-  }, [points, mapMode]);
+
+    return points.filter((point) => point.type === "wine");
+  }, [mapMode, points]);
 
   const editorialGallery = useMemo(
     () => [
@@ -218,7 +271,15 @@ export default function CartePage() {
     (pts: MapPoint[]) => {
       const map = mapInstanceRef.current;
       const google = window.google;
-      if (!map || !google || pts.length === 0) return;
+      if (!map || !google) return;
+
+      if (pts.length === 0) {
+        map.setCenter(
+          mapMode === "quebec" ? DEFAULT_CENTER_QUEBEC : DEFAULT_CENTER_WORLD
+        );
+        map.setZoom(mapMode === "quebec" ? 7 : 2);
+        return;
+      }
 
       if (pts.length === 1) {
         map.panTo({ lat: pts[0].latitude, lng: pts[0].longitude });
@@ -282,6 +343,8 @@ export default function CartePage() {
 
         marker.addListener("click", () => {
           setSelectedPoint(point);
+          setSelectedStart(point);
+          setPlanningError(null);
 
           const html = `
             <div style="min-width:220px;max-width:260px;padding:6px 2px 4px 2px;">
@@ -317,40 +380,67 @@ export default function CartePage() {
     [clearMarkers]
   );
 
-  const fetchPoints = useCallback(async (mode: MapMode) => {
-    setLoadingPoints(true);
-    setPointsError(null);
+  const fetchPoints = useCallback(
+    async (mode: MapMode) => {
+      setLoadingPoints(true);
+      setPointsError(null);
 
-    try {
-      const res = await fetch(`/api/map/points?mode=${mode}`, {
-        method: "GET",
-        cache: "no-store",
-      });
+      try {
+        if (mode === "world" && selectedCountries.length === 0) {
+          setPoints([]);
+          setSelectedPoint(null);
+          setSelectedStart((current) => {
+            if (!current) return null;
+            return current.type === "wine" ? null : current;
+          });
+          setPlannedRoutes([]);
+          setActiveRouteIndex(0);
+          clearRouteLine();
+          return;
+        }
 
-      if (!res.ok) {
-        throw new Error(`Impossible de charger les points (${res.status})`);
+        let url = `/api/map/points?mode=${mode}`;
+
+        if (mode === "world") {
+          url += `&countries=${encodeURIComponent(selectedCountries.join(","))}&limit=500`;
+        }
+
+        const res = await fetch(url, {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        if (!res.ok) {
+          throw new Error(`Impossible de charger les points (${res.status})`);
+        }
+
+        const data = await res.json();
+        const nextPoints: MapPoint[] = Array.isArray(data?.points)
+          ? data.points
+          : [];
+
+        setPoints(nextPoints);
+        setSelectedPoint(null);
+        setSelectedStart((current) => {
+          if (!current) return null;
+          const stillExists = nextPoints.find((p) => p.id === current.id);
+          return stillExists ?? null;
+        });
+        setPlannedRoutes([]);
+        setActiveRouteIndex(0);
+        clearRouteLine();
+      } catch (error) {
+        setPointsError(
+          error instanceof Error
+            ? error.message
+            : "Une erreur est survenue lors du chargement des points."
+        );
+      } finally {
+        setLoadingPoints(false);
       }
-
-      const data = await res.json();
-      const nextPoints: MapPoint[] = Array.isArray(data?.points) ? data.points : [];
-
-      setPoints(nextPoints);
-      setSelectedPoint(null);
-      setSelectedStart((current) => {
-        if (!current) return null;
-        const stillExists = nextPoints.find((p) => p.id === current.id);
-        return stillExists ?? null;
-      });
-    } catch (error) {
-      setPointsError(
-        error instanceof Error
-          ? error.message
-          : "Une erreur est survenue lors du chargement des points."
-      );
-    } finally {
-      setLoadingPoints(false);
-    }
-  }, []);
+    },
+    [clearRouteLine, selectedCountries]
+  );
 
   const drawRoute = useCallback(
     (route: PlannedRoute | null) => {
@@ -407,9 +497,24 @@ export default function CartePage() {
     );
   };
 
+  const toggleCountry = (country: string) => {
+    setSelectedCountries((current) => {
+      if (current.includes(country)) {
+        return current.filter((item) => item !== country);
+      }
+
+      if (current.length >= 5) {
+        return current;
+      }
+
+      return [...current, country];
+    });
+  };
+
   const handleChooseStart = (point: MapPoint) => {
     setSelectedStart(point);
     setSelectedPoint(point);
+    setPlanningError(null);
 
     const map = mapInstanceRef.current;
     if (map) {
@@ -420,7 +525,9 @@ export default function CartePage() {
 
   const handlePlanRoute = async () => {
     if (!selectedStart) {
-      setPlanningError("Choisis d’abord un point de départ sur la carte ou dans la liste.");
+      setPlanningError(
+        "Choisis d’abord un point de départ sur la carte ou dans la liste."
+      );
       return;
     }
 
@@ -491,7 +598,7 @@ export default function CartePage() {
 
   useEffect(() => {
     fetchPoints(mapMode);
-  }, [fetchPoints, mapMode]);
+  }, [fetchPoints, mapMode, selectedCountries]);
 
   useEffect(() => {
     if (!mapsReady || !mapInstanceRef.current) return;
@@ -503,6 +610,19 @@ export default function CartePage() {
   useEffect(() => {
     drawRoute(activeRoute);
   }, [activeRoute, drawRoute]);
+
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (mapMode === "quebec") {
+      map.setCenter(DEFAULT_CENTER_QUEBEC);
+      map.setZoom(7);
+    } else {
+      map.setCenter(DEFAULT_CENTER_WORLD);
+      map.setZoom(2);
+    }
+  }, [mapMode]);
 
   return (
     <>
@@ -520,7 +640,10 @@ export default function CartePage() {
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
-              onClick={() => setMapMode("quebec")}
+              onClick={() => {
+                setMapMode("quebec");
+                setSelectedCountries([]);
+              }}
               className={cx(
                 "inline-flex items-center rounded-full px-5 py-2.5 text-sm font-medium transition",
                 mapMode === "quebec"
@@ -533,7 +656,9 @@ export default function CartePage() {
 
             <button
               type="button"
-              onClick={() => setMapMode("world")}
+              onClick={() => {
+                setMapMode("world");
+              }}
               className={cx(
                 "inline-flex items-center rounded-full px-5 py-2.5 text-sm font-medium transition",
                 mapMode === "world"
@@ -573,7 +698,10 @@ export default function CartePage() {
           <div className="absolute left-6 top-6 z-20 flex items-center gap-2 rounded-full border border-white/10 bg-[rgba(18,13,11,0.82)] p-1 backdrop-blur-xl">
             <button
               type="button"
-              onClick={() => setMapMode("quebec")}
+              onClick={() => {
+                setMapMode("quebec");
+                setSelectedCountries([]);
+              }}
               className={cx(
                 "rounded-full px-4 py-2 text-sm font-medium transition",
                 mapMode === "quebec"
@@ -585,7 +713,9 @@ export default function CartePage() {
             </button>
             <button
               type="button"
-              onClick={() => setMapMode("world")}
+              onClick={() => {
+                setMapMode("world");
+              }}
               className={cx(
                 "rounded-full px-4 py-2 text-sm font-medium transition",
                 mapMode === "world"
@@ -611,7 +741,7 @@ export default function CartePage() {
             </p>
           </div>
 
-          {loadingPoints && (
+          {loadingPoints && points.length === 0 && (
             <div className="absolute right-4 top-4 z-20 rounded-full border border-white/10 bg-[rgba(18,13,11,0.82)] px-4 py-2 text-sm text-[#e7d7c9] backdrop-blur-xl">
               Chargement des points…
             </div>
@@ -623,6 +753,68 @@ export default function CartePage() {
             </div>
           )}
         </section>
+
+        {mapMode === "world" && (
+          <section className="rounded-[24px] border border-[#d7cfc2] bg-white p-5 shadow-[0_16px_45px_rgba(58,42,28,0.06)]">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.24em] text-[#8b7d71]">
+                  Monde
+                </p>
+                <h3 className="mt-2 font-serif text-2xl text-[#221c18]">
+                  Sélectionne les pays à afficher
+                </h3>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-[#665d54]">
+                  Pour éviter de surcharger la carte, les vins du monde ne sont
+                  affichés qu’après sélection d’un ou plusieurs pays.
+                </p>
+              </div>
+
+              {selectedCountries.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedCountries([])}
+                  className="inline-flex items-center rounded-full border border-[#d7cfc2] bg-[#faf6ef] px-4 py-2 text-sm text-[#5d544b] transition hover:bg-[#f3ecdf]"
+                >
+                  Effacer la sélection
+                </button>
+              )}
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              {WORLD_COUNTRIES.map((country) => {
+                const active = selectedCountries.includes(country);
+
+                return (
+                  <button
+                    key={country}
+                    type="button"
+                    onClick={() => toggleCountry(country)}
+                    className={cx(
+                      "rounded-full border px-3 py-2 text-sm transition",
+                      active
+                        ? "border-[#d6b692] bg-[#d6b692] text-[#2b1d18]"
+                        : "border-[#ddd5c9] bg-white text-[#5d544b] hover:bg-[#f5f0e7]"
+                    )}
+                  >
+                    {country}
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="mt-4 text-xs text-[#8a7f73]">
+              {selectedCountries.length}/5 pays sélectionnés
+            </p>
+
+            {selectedCountries.length === 0 && (
+              <div className="mt-4 rounded-[18px] border border-dashed border-[#d7cfc2] bg-[#faf8f3] px-4 py-3 text-sm text-[#6b6156]">
+                Aucun pays sélectionné pour l’instant — la carte reste vide afin
+                de garder une expérience fluide.
+              </div>
+            )}
+          </section>
+        )}
 
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
           <PremiumStatCard
@@ -1032,7 +1224,11 @@ export default function CartePage() {
           <PremiumSection
             title="Départs suggérés"
             subtitle="Les points visibles sur la carte sont repris ici dans une lecture plus claire et plus éditoriale."
-            rightSlot={<div className="rounded-full border border-[#d7cfc2] bg-white px-4 py-2 text-sm text-[#6a6156]">{visiblePoints.length} points</div>}
+            rightSlot={
+              <div className="rounded-full border border-[#d7cfc2] bg-white px-4 py-2 text-sm text-[#6a6156]">
+                {visiblePoints.length} points
+              </div>
+            }
           >
             <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
               {visiblePoints.slice(0, 16).map((point) => {
@@ -1092,11 +1288,19 @@ export default function CartePage() {
                 );
               })}
 
-              {visiblePoints.length === 0 && !loadingPoints && (
+              {mapMode === "world" && selectedCountries.length === 0 && !loadingPoints && (
                 <div className="rounded-[22px] border border-[#ddd5c9] bg-white p-4 text-sm text-[#6b6156]">
-                  Aucun point disponible pour ce mode.
+                  Sélectionne un ou plusieurs pays pour afficher les vins du monde.
                 </div>
               )}
+
+              {visiblePoints.length === 0 &&
+                !loadingPoints &&
+                !(mapMode === "world" && selectedCountries.length === 0) && (
+                  <div className="rounded-[22px] border border-[#ddd5c9] bg-white p-4 text-sm text-[#6b6156]">
+                    Aucun point disponible pour ce mode.
+                  </div>
+                )}
             </div>
           </PremiumSection>
 

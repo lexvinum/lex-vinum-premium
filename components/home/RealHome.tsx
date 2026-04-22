@@ -4,7 +4,7 @@ import Link from "next/link";
 export default function HomePage() {
   return (
     <main className="bg-[#efebe3] text-[#1f1a17]">
-      <section className="px-4 pb-4 pt-4 md:px-6 md:pb-6 md:pt-6">
+      <section className="px-4 pb-4 md:px-6 md:pb-6">
         <div className="relative min-h-[78vh] overflow-hidden rounded-[28px] border border-[#d8d1c5] bg-[#dcd5c8]">
           <Image
             src="/images/hero.jpeg"
@@ -17,15 +17,6 @@ export default function HomePage() {
           />
 
           <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(24,20,18,0.12),rgba(24,20,18,0.46))]" />
-
-          <div className="absolute left-0 right-0 top-0 z-10 flex items-center justify-between px-6 py-6 md:px-10">
-            <p className="text-[11px] uppercase tracking-[0.34em] text-[#f4eee4]">
-              Lex Vinum Premium
-            </p>
-            <p className="hidden text-[11px] uppercase tracking-[0.28em] text-[#e8decd] md:block">
-              Québec · Répertoire · Scan · Recommandation
-            </p>
-          </div>
 
           <div className="relative z-10 flex min-h-[78vh] items-end px-6 pb-8 md:px-10 md:pb-10">
             <div className="max-w-4xl">
